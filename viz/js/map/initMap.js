@@ -153,7 +153,11 @@ export async function initMap(container) {
 
   addBasemapAndTerrainLayers(map);
   addGradientLayers(map, regionUrls);
-  add3DBuildingsLayer(map);
+  // 3D buildings + DEM/hillshade are NOT added at init anymore — the
+  // sources fire their tilejson + DEM tile fetches eagerly the moment they
+  // exist, even if the corresponding layer is hidden. We lazy-add them in
+  // the setMapBuildings / setMapRelief helpers below the first time the
+  // user actually toggles them on.
 
   return { map };
 }
@@ -223,9 +227,16 @@ function addBasemapAndTerrainLayers(map) {
     firstSymbol,
   );
 
-  // Mapterhorn DEM tiles double as terrain source (3D) and hillshade source.
-  // We don't need two separate raster-dem sources: the hillshade layer reads
-  // the same tiles, MapLibre dedupes the fetches.
+  // Mapterhorn DEM source + hillshade layer are NOT added here anymore —
+  // the source's tilejson fetches eagerly the moment we register it, even
+  // with no consumer. `ensureTerrainArtifacts` adds them on first relief
+  // toggle.
+}
+
+// Lazy adders for DEM + buildings. Kept out of init so an unused toggle
+// doesn't cost a tilejson roundtrip on every page load.
+function ensureTerrainArtifacts(map) {
+  if (map.getSource(TERRAIN_DEM_SOURCE_ID)) return;
   map.addSource(TERRAIN_DEM_SOURCE_ID, {
     type: 'raster-dem',
     url: TERRAIN_DEM_TILEJSON_URL,
@@ -233,7 +244,6 @@ function addBasemapAndTerrainLayers(map) {
     encoding: 'terrarium',
     attribution: '© Mapterhorn',
   });
-
   map.addLayer(
     {
       id: HILLSHADE_LAYER_ID,
@@ -245,19 +255,16 @@ function addBasemapAndTerrainLayers(map) {
         'hillshade-illumination-anchor': 'map',
       },
     },
-    firstSymbol,
+    findFirstSymbolLayer(map),
   );
 }
 
-function add3DBuildingsLayer(map) {
-  // OpenFreeMap's planet vector tiles include a `building` source-layer with
-  // `render_height` / `render_min_height` — exactly what fill-extrusion needs.
-  // 12 m default keeps unmapped buildings somewhat realistic (3-4 floors).
+function ensureBuildingsArtifacts(map) {
+  if (map.getSource(BUILDINGS_SOURCE_ID)) return;
   map.addSource(BUILDINGS_SOURCE_ID, {
     type: 'vector',
     url: BUILDINGS_VECTOR_URL,
   });
-
   map.addLayer({
     id: BUILDINGS_LAYER_ID,
     type: 'fill-extrusion',
@@ -539,6 +546,9 @@ export function setMapBasemap(map, basemap) {
 
 export function setMapRelief(map, enabled) {
   if (!map) return;
+  // Lazy: only fetch the Mapterhorn tilejson + start streaming DEM tiles
+  // the first time the user actually flips this toggle.
+  if (enabled) ensureTerrainArtifacts(map);
   if (map.getLayer(HILLSHADE_LAYER_ID)) {
     map.setLayoutProperty(HILLSHADE_LAYER_ID, 'visibility', enabled ? 'visible' : 'none');
   }
@@ -563,8 +573,13 @@ export function setMapRelief(map, enabled) {
 }
 
 export function setMapBuildings(map, enabled) {
-  if (!map || !map.getLayer(BUILDINGS_LAYER_ID)) return;
-  map.setLayoutProperty(BUILDINGS_LAYER_ID, 'visibility', enabled ? 'visible' : 'none');
+  if (!map) return;
+  // Lazy: only fetch the OpenFreeMap planet tilejson + start streaming
+  // building polygons the first time the user actually flips this toggle.
+  if (enabled) ensureBuildingsArtifacts(map);
+  if (map.getLayer(BUILDINGS_LAYER_ID)) {
+    map.setLayoutProperty(BUILDINGS_LAYER_ID, 'visibility', enabled ? 'visible' : 'none');
+  }
 }
 
 export function setActiveOsmIdForArrows(map, osmId) {
