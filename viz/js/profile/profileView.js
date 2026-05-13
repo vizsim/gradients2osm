@@ -52,6 +52,25 @@ export function setupProfileView(appState) {
     dom.unpinButton.addEventListener('click', () => appState.unpin());
   }
 
+  // Click on a row in the gradient list switches the active metric — same
+  // effect as the picker pinned to the bottom of the panel. Event
+  // delegation here is robust to the list rebuilding on every active-segment
+  // change.
+  if (dom.gradientList) {
+    dom.gradientList.addEventListener('click', (event) => {
+      const item = event.target.closest('.metric-list-item[data-metric]');
+      if (!item) return;
+      appState.setGradientMetric(item.dataset.metric);
+    });
+    dom.gradientList.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const item = event.target.closest('.metric-list-item[data-metric]');
+      if (!item) return;
+      event.preventDefault();
+      appState.setGradientMetric(item.dataset.metric);
+    });
+  }
+
   let lastState = appState.getState();
   let resizeFrame = null;
 
@@ -365,6 +384,10 @@ function renderGradientList(list, props, activeMetric) {
     const value = readNumber(props[id]);
     const item = document.createElement('li');
     item.className = 'metric-list-item';
+    item.dataset.metric = id;
+    item.setAttribute('role', 'button');
+    item.setAttribute('tabindex', '0');
+    item.setAttribute('title', `Karte nach „${label}" einfärben`);
     if (id === activeMetric) item.classList.add('is-active');
 
     const swatch = document.createElement('span');

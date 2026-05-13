@@ -439,12 +439,31 @@ button {
   border: 1px solid var(--border-primary);
   border-radius: 8px;
   font-size: 0.88rem;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.metric-list-item:hover {
+  background: #ffffff;
+  border-color: #c4b5fd;
+  transform: translateX(1px);
+}
+
+.metric-list-item:focus-visible {
+  outline: 2px solid var(--store);
+  outline-offset: 2px;
 }
 
 .metric-list-item.is-active {
   background: #ffffff;
   border-color: var(--store);
   box-shadow: 0 0 0 1px var(--store) inset;
+}
+
+.metric-list-item.is-active:hover {
+  /* Don't shift the already-highlighted row on hover — keeps the
+     "this is the picked one" anchor visually steady. */
+  transform: none;
 }
 
 .metric-list-swatch {

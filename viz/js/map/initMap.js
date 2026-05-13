@@ -26,6 +26,27 @@ const GRADIENT_REGIONS = [
 const LOCAL_PMTILES_BASE = './data/';
 const REMOTE_PMTILES_BASE = 'https://f003.backblazeb2.com/file/gradients2osm/';
 
+// Highway tiers — used both for build-time filtering (in tippecanoe) and
+// runtime zoom-aware filtering on the main layer below.
+const MAJOR_HIGHWAYS = [
+  'motorway', 'motorway_link',
+  'trunk', 'trunk_link',
+  'primary', 'primary_link',
+  'secondary', 'secondary_link',
+  'tertiary', 'tertiary_link',
+];
+
+// Main-layer filter: at z<11.5 only show major roads; from z11.5 up the
+// data already contains residentials/etc. and we let them through. Same
+// `step` pattern as a layer-level minzoom, but applied per-feature so a
+// single main layer per region is enough (no minor/major layer split).
+const MAIN_LAYER_BASE_FILTER = [
+  'step', ['zoom'],
+  ['match', ['get', 'highway'], MAJOR_HIGHWAYS, true, false],
+  11.5,
+  true,
+];
+
 const SOURCE_LAYER = 'ways';
 const sourceIdFor = (regionId) => `gradients-${regionId}`;
 const layerIds = (regionId) => ({
@@ -120,13 +141,12 @@ export async function initMap(container) {
   const map = new maplibregl.Map({
     container,
     style: POSITRON_STYLE_URL,
-    // Default view: centered roughly on Germany, zoomed out enough to show
-    // all three current regions (Saarland in the west, Brandenburg in the
-    // northeast, Baden-Württemberg in the south). `hash: true` means the
-    // URL hash takes precedence on reload, so the user's last position is
-    // sticky after the first visit.
-    center: [10.45, 51.16],
-    zoom: 6,
+    // Default view: Berlin city centre at z~11 — enough to see one full
+    // gradient region with residential streets in detail. `hash: true`
+    // means the URL hash takes precedence on reload, so the user's last
+    // position is sticky after the first visit.
+    center: [13.4378, 52.5128],
+    zoom: 10.92,
     minZoom: 5,
     maxZoom: 17,
     maxPitch: 75,
@@ -327,6 +347,10 @@ function addGradientLayers(map, regionUrls) {
         type: 'line',
         source: sourceIdFor(region.id),
         'source-layer': SOURCE_LAYER,
+        // Hide residentials/etc. below z11.5 — keeps the overview view
+        // legible at zoom 9–11. Hover/pin/arrow layers don't get this filter
+        // so a pinned residential stays visible even after zooming out.
+        filter: MAIN_LAYER_BASE_FILTER,
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': buildGradientColorExpression(),
@@ -334,15 +358,15 @@ function addGradientLayers(map, regionUrls) {
             'interpolate',
             ['exponential', 1.6],
             ['zoom'],
-            10, 0.4,
-            13, 1.4,
+            9, 1.6,
+            13, 1.8,
             15, 3,
             17, 6,
           ],
           'line-opacity': [
             'interpolate', ['linear'], ['zoom'],
-            9, 0.55,
-            12, 0.85,
+            9, 0.85,
+            12, 0.9,
             14, 0.95,
           ],
         },
@@ -488,24 +512,24 @@ export function setMapGradientMetric(map, metric) {
 }
 
 // Restrict the main ways layer to features whose |metric| lies inside
-// [min, max]. At the default range we clear the filter entirely so MapLibre
-// doesn't bother evaluating a no-op expression per tile.
+// [min, max]. We always keep the zoom-tier base filter active — the slider
+// composes on top of it instead of replacing it.
 export function setMapGradientFilter(map, { metric, min, max, legendMax }) {
   if (!map) return;
 
   const hasLower = min > 0;
   const hasUpper = max < legendMax;
 
-  let filter = null;
+  let filter = MAIN_LAYER_BASE_FILTER;
   if (hasLower || hasUpper) {
     // to-number(get, 0) is strictly typed as `number` (with 0 as the fallback
     // for null/missing); coalesce + get returns `value | number` which fails
     // MapLibre's static typecheck on abs() with "expected number, found null".
     const valueExpr = ['abs', ['to-number', ['get', metric], 0]];
-    const clauses = [];
+    const clauses = [MAIN_LAYER_BASE_FILTER];
     if (hasLower) clauses.push(['>=', valueExpr, min]);
     if (hasUpper) clauses.push(['<=', valueExpr, max]);
-    filter = clauses.length === 1 ? clauses[0] : ['all', ...clauses];
+    filter = ['all', ...clauses];
   }
 
   for (const layerId of REGION_LAYER_IDS.main) {
