@@ -1,12 +1,7 @@
 // Translate pointer events on the ways layers into hover/pin state updates.
-// Hover triggers a debounced profile fetch; click pins a segment so the panel
-// stays put while you mouse around. ESC and clicks on empty map space unpin.
-//
-// Multi-region: we listen to global mousemove/click on the map and use
-// queryRenderedFeatures across all region main-layers in one call. The
-// region a feature belongs to is encoded via the layer it came from; we
-// stash that in the active feature so the hover/pin highlight stays scoped
-// to the right region's source layer.
+// Plain click replaces the route with the clicked segment. Ctrl/Cmd+click
+// toggles a segment in/out of the route, auto-orienting it against the
+// previous tail. ESC and clicks on empty map space clear the route.
 
 import {
   GRADIENTS_MAIN_LAYER_IDS,
@@ -17,6 +12,10 @@ import {
   setActiveOsmIdForArrows,
 } from './initMap.js';
 import { samplePolyline } from '../elevation/lineSampling.js';
+import {
+  buildRouteFromSegments,
+  orientAgainstTail,
+} from '../elevation/routeBuilder.js';
 
 const HOVER_DEBOUNCE_MS = 60;
 
@@ -25,11 +24,7 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
   let pendingTimer = null;
   let lastHoverFeatureKey = null;
 
-  // ── Pointer interactions ────────────────────────────────────────────────
-  // One global mousemove handler — queryRenderedFeatures over all region
-  // main-layers in a single call, which is what MapLibre does internally
-  // anyway when you scope `map.on('mousemove', LAYER_ID, ...)`. Doing it
-  // here lets us scale to N regions without N hover handlers.
+  // ── Hover (preview when nothing pinned) ─────────────────────────────────
   map.on('mousemove', (event) => {
     const features = map.queryRenderedFeatures(event.point, {
       layers: GRADIENTS_MAIN_LAYER_IDS,
@@ -49,14 +44,11 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
     }
 
     canvas.style.cursor = 'pointer';
-
     const feature = pickClosestFeature(features);
     const osmId = readOsmId(feature);
     if (osmId === null) return;
 
     const regionId = regionIdForLayer(feature.layer?.id);
-    // Dedup on osm_id + region — same osm_id should only show up in one
-    // region, but be defensive about overlap on shared borders.
     const key = `${regionId}:${osmId}`;
     if (key === lastHoverFeatureKey) return;
     lastHoverFeatureKey = key;
@@ -70,57 +62,68 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
 
     appState.applyHover(hovered);
 
-    // While pinned, applyHover only nudges the secondary highlight; don't
-    // burn a Mapterhorn request on it.
+    // While pinned, hover only nudges the secondary highlight; don't burn a
+    // Mapterhorn request on it.
     if (appState.getState().pinned) return;
 
     if (pendingTimer !== null) clearTimeout(pendingTimer);
     pendingTimer = setTimeout(() => {
       pendingTimer = null;
-      requestProfile({ appState, mapterhornClient, osmId, feature: hovered });
+      requestProfileForCurrentState({ appState, mapterhornClient, hovered });
     }, HOVER_DEBOUNCE_MS);
   });
 
-  // Click anywhere on the map. If a way is under the click point, pin it
-  // (or toggle off if already pinned). Otherwise treat as "click empty" and
-  // unpin.
+  // ── Click: plain = replace, Ctrl/Cmd = toggle in route ──────────────────
   map.on('click', (event) => {
     const features = map.queryRenderedFeatures(event.point, {
       layers: GRADIENTS_MAIN_LAYER_IDS,
     });
 
+    const original = event.originalEvent;
+    const additive = !!(original && (original.ctrlKey || original.metaKey || original.shiftKey));
+
     if (features.length === 0) {
-      appState.unpin();
+      // Plain click on empty map → unpin everything. Ctrl+click on empty
+      // map → no-op (you didn't mean to drop your route by missing a way).
+      if (!additive) appState.unpin();
       return;
     }
 
     const feature = pickClosestFeature(features);
     const osmId = readOsmId(feature);
-    if (osmId === null) {
-      appState.unpin();
-      return;
-    }
+    if (osmId === null) return;
 
     const regionId = regionIdForLayer(feature.layer?.id);
-    const pinned = {
+    const baseFeature = {
       osmId,
       regionId,
       properties: { ...feature.properties },
       coordinates: extractLineCoordinates(feature),
     };
 
-    const wasPinnedSame = appState.getState().pinned
-      && appState.getState().activeFeature?.osmId === osmId;
+    if (!additive) {
+      // Plain click → replace the route with just this one segment.
+      appState.pinFeature({ ...baseFeature, reversed: false });
+    } else {
+      // Ctrl+click → toggle in/out. If appending, auto-orient against the
+      // previous tail of the current route so the route flows naturally.
+      const { pinnedSegments } = appState.getState();
+      const alreadyPinned = pinnedSegments.some((s) => s.osmId === osmId);
 
-    appState.pinFeature(pinned);
-
-    if (wasPinnedSame) return;
+      if (alreadyPinned) {
+        appState.togglePinnedFeature(baseFeature);
+      } else {
+        const prevTail = computePreviousTail(pinnedSegments);
+        const { reversed } = orientAgainstTail(prevTail, baseFeature.coordinates);
+        appState.togglePinnedFeature({ ...baseFeature, reversed });
+      }
+    }
 
     if (pendingTimer !== null) {
       clearTimeout(pendingTimer);
       pendingTimer = null;
     }
-    requestProfile({ appState, mapterhornClient, osmId, feature: pinned });
+    requestProfileForCurrentState({ appState, mapterhornClient });
   });
 
   // ── Keyboard: ESC unpins ────────────────────────────────────────────────
@@ -131,41 +134,42 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
   });
 
   // ── Layer filter & marker sync (single writer) ──────────────────────────
-  let appliedPinKey = null;
+  let appliedPinSignature = '';
   let appliedHoverKey = null;
   let appliedSampleKey = null;
   let appliedArrowOsmId = null;
+
   appState.subscribe((state) => {
-    // Pin highlight: only the active region's pin layer gets the osm_id —
-    // every other region's pin layer goes back to filter == -1 (nothing).
-    const pinOsmId = state.pinned ? state.activeFeature?.osmId ?? null : null;
-    const pinRegion = state.pinned ? state.activeFeature?.regionId ?? null : null;
-    const pinKey = pinOsmId === null ? '' : `${pinRegion}:${pinOsmId}`;
-    if (pinKey !== appliedPinKey) {
-      applyRegionScopedFilter(map, GRADIENTS_PIN_LAYER_IDS, pinRegion, pinOsmId);
-      appliedPinKey = pinKey;
+    // Pin highlight: every pinned osm_id should light up in its region's
+    // pin layer. We compute a per-region list of osm_ids and feed each
+    // region's layer an `in` filter.
+    const pinSignature = state.pinned
+      ? state.pinnedSegments.map((s) => `${s.regionId}:${s.osmId}`).join('|')
+      : '';
+    if (pinSignature !== appliedPinSignature) {
+      applyMultiRegionPinFilter(map, GRADIENTS_PIN_LAYER_IDS, state.pinnedSegments);
+      appliedPinSignature = pinSignature;
     }
 
-    // Hover highlight: show the active feature when unpinned, OR the
-    // secondary hover indicator when pinned. Suppress if it duplicates the
-    // pinned osm_id.
-    const hoverFeature = state.pinned
-      ? { osmId: state.hoverIndicatorOsmId, regionId: null }
-      : { osmId: state.activeFeature?.osmId ?? null, regionId: state.activeFeature?.regionId ?? null };
-    const hoverOsmId = hoverFeature.osmId !== null && hoverFeature.osmId !== pinOsmId
-      ? hoverFeature.osmId
-      : null;
-    // When pinned, we don't actually know which region the hovered way is
-    // in (it's just an osm_id), so we apply the filter to ALL hover layers —
-    // exactly one region will match (osm_ids are globally unique in OSM).
-    const hoverRegion = hoverOsmId !== null ? hoverFeature.regionId : null;
+    // Hover highlight: shows the active feature when unpinned, or the
+    // secondary indicator when pinned (and that indicator isn't already in
+    // the pinned set).
+    let hoverOsmId = null;
+    let hoverRegion = null;
+    if (state.pinned) {
+      hoverOsmId = state.hoverIndicatorOsmId;
+      hoverRegion = null; // we don't know region from osm_id alone — apply to all
+    } else if (state.activeFeature) {
+      hoverOsmId = state.activeFeature.osmId;
+      hoverRegion = state.activeFeature.regionId ?? null;
+    }
     const hoverKey = hoverOsmId === null ? '' : `${hoverRegion ?? '*'}:${hoverOsmId}`;
     if (hoverKey !== appliedHoverKey) {
       applyRegionScopedFilter(map, GRADIENTS_HOVER_LAYER_IDS, hoverRegion, hoverOsmId);
       appliedHoverKey = hoverKey;
     }
 
-    // Sample marker on the map mirroring the heightgraph hover.
+    // Sample marker mirroring the heightgraph cursor onto the map.
     const sample = state.hoverSampleIndex !== null && state.profileData
       ? state.profileData.samples?.[state.hoverSampleIndex] ?? null
       : null;
@@ -177,37 +181,137 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
       appliedSampleKey = sampleKey;
     }
 
-    // Direction arrows along the active segment.
-    const activeOsmId = state.activeFeature?.osmId ?? null;
-    if (activeOsmId !== appliedArrowOsmId) {
-      setActiveOsmIdForArrows(map, activeOsmId);
-      appliedArrowOsmId = activeOsmId;
+    // Direction arrows along the focused segment (only one set, even when
+    // multiple are pinned — would be visually too noisy otherwise).
+    const arrowOsmId = state.activeFeature?.osmId ?? null;
+    if (arrowOsmId !== appliedArrowOsmId) {
+      setActiveOsmIdForArrows(map, arrowOsmId);
+      appliedArrowOsmId = arrowOsmId;
     }
   });
 }
 
-// Match a layer id like 'gradients-saarland-ways' back to its region id
-// using the registered regions table. We can't just split on '-' because
-// some region ids (baden_wuerttemberg) contain underscores not present in
-// the prefix.
-function regionIdForLayer(layerId) {
-  if (!layerId) return null;
-  for (const region of GRADIENT_REGIONS) {
-    const prefix = `gradients-${region.id}-`;
-    if (layerId.startsWith(prefix)) return region.id;
+// ─────────────────────────────────────────────────────────────────────────
+// Profile request — route-aware
+// ─────────────────────────────────────────────────────────────────────────
+
+async function requestProfileForCurrentState({ appState, mapterhornClient, hovered }) {
+  const state = appState.getState();
+
+  if (state.pinned && state.pinnedSegments.length > 0) {
+    return requestRouteProfile({ appState, mapterhornClient, segments: state.pinnedSegments });
   }
-  return null;
+  if (hovered) {
+    return requestSingleProfile({ appState, mapterhornClient, feature: hovered });
+  }
 }
 
-// Apply an osm_id filter to one region's layer while resetting all the
-// others to the "match nothing" sentinel. Used for pin/hover highlights so
-// only the relevant region's layer actually lights up. Passing
-// targetRegionId=null means "no region active" → all layers reset.
-//
-// In the pinned-but-hovering-other case the caller passes targetRegionId=null
-// for hover (we don't know the region from just an osm_id), in which case we
-// apply the filter to ALL layers — exactly one will match because osm_ids
-// are globally unique in OSM.
+// Sample the entire ordered route as one polyline. The heightgraph then
+// shows a single continuous profile across all clicked segments, with
+// segment boundaries marked on the X-axis.
+async function requestRouteProfile({ appState, mapterhornClient, segments }) {
+  const route = buildRouteFromSegments(segments);
+  if (route.coordinates.length < 2) {
+    appState.setProfileError(routeKey(segments), 'Keine Liniengeometrie zum Auswerten.');
+    return;
+  }
+
+  const { samples, totalDistanceMeters } = samplePolyline(route.coordinates);
+  if (samples.length < 2 || totalDistanceMeters <= 0) {
+    appState.setProfileError(routeKey(segments), 'Keine Liniengeometrie zum Auswerten.');
+    return;
+  }
+
+  const id = routeKey(segments);
+  appState.setProfileLoading(id);
+
+  try {
+    const result = await mapterhornClient.sampleProfile(samples);
+    const stats = computeStats(samples, result.elevations, totalDistanceMeters);
+    appState.setProfileData(id, {
+      samples,
+      elevations: result.elevations,
+      stats,
+      // Segment-aware metadata for the heightgraph + chips:
+      route: {
+        joins: route.joins,
+        segmentLengthsMeters: route.segmentLengthsMeters,
+        cumulativeStartsMeters: route.cumulativeStartsMeters,
+      },
+    });
+  } catch (error) {
+    appState.setProfileError(id, error?.message || 'Höhenprofil konnte nicht geladen werden.');
+  }
+}
+
+// Original single-segment path (used for hover preview when nothing is pinned).
+async function requestSingleProfile({ appState, mapterhornClient, feature }) {
+  const coordinates = feature.coordinates && feature.coordinates.length > 0
+    ? feature.coordinates
+    : [];
+  const { samples, totalDistanceMeters } = samplePolyline(coordinates);
+
+  if (samples.length < 2 || totalDistanceMeters <= 0) {
+    appState.setProfileError(feature.osmId, 'Keine Liniengeometrie zum Auswerten.');
+    return;
+  }
+
+  appState.setProfileLoading(feature.osmId);
+
+  try {
+    const result = await mapterhornClient.sampleProfile(samples);
+    const stats = computeStats(samples, result.elevations, totalDistanceMeters);
+    appState.setProfileData(feature.osmId, {
+      samples,
+      elevations: result.elevations,
+      stats,
+      properties: feature.properties,
+    });
+  } catch (error) {
+    appState.setProfileError(feature.osmId, error?.message || 'Höhenprofil konnte nicht geladen werden.');
+  }
+}
+
+// Stable id for a route, used to dedup setProfileData / setProfileError
+// callbacks against the user pinning/removing segments mid-fetch.
+function routeKey(segments) {
+  return `route:${segments.map((s) => `${s.osmId}${s.reversed ? '-r' : ''}`).join(',')}`;
+}
+
+function computePreviousTail(pinnedSegments) {
+  if (!pinnedSegments.length) return null;
+  const last = pinnedSegments[pinnedSegments.length - 1];
+  const coords = last.coordinates;
+  if (!coords?.length) return null;
+  return last.reversed ? coords[0] : coords[coords.length - 1];
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Map layer filter helpers
+// ─────────────────────────────────────────────────────────────────────────
+
+function applyMultiRegionPinFilter(map, layerIds, pinnedSegments) {
+  // Group osm_ids by region — each region's pin layer only matches its own.
+  const byRegion = new Map();
+  for (const seg of pinnedSegments) {
+    if (!byRegion.has(seg.regionId)) byRegion.set(seg.regionId, []);
+    byRegion.get(seg.regionId).push(seg.osmId);
+  }
+
+  for (const layerId of layerIds) {
+    if (!map.getLayer(layerId)) continue;
+    const region = regionIdForLayer(layerId);
+    const ids = byRegion.get(region) || [];
+    if (ids.length === 0) {
+      map.setFilter(layerId, ['==', ['get', 'osm_id'], -1]);
+    } else if (ids.length === 1) {
+      map.setFilter(layerId, ['==', ['get', 'osm_id'], ids[0]]);
+    } else {
+      map.setFilter(layerId, ['in', ['get', 'osm_id'], ['literal', ids]]);
+    }
+  }
+}
+
 function applyRegionScopedFilter(map, layerIds, targetRegionId, osmId) {
   if (osmId === null || osmId === undefined) {
     const noMatch = ['==', ['get', 'osm_id'], -1];
@@ -226,6 +330,19 @@ function applyRegionScopedFilter(map, layerIds, targetRegionId, osmId) {
     map.setFilter(layerId, inTargetRegion ? match : noMatch);
   }
 }
+
+function regionIdForLayer(layerId) {
+  if (!layerId) return null;
+  for (const region of GRADIENT_REGIONS) {
+    const prefix = `gradients-${region.id}-`;
+    if (layerId.startsWith(prefix)) return region.id;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Misc helpers (unchanged from single-pin version)
+// ─────────────────────────────────────────────────────────────────────────
 
 function pickClosestFeature(features) {
   for (const feature of features) {
@@ -255,33 +372,6 @@ function extractLineCoordinates(feature) {
     }, []);
   }
   return [];
-}
-
-async function requestProfile({ appState, mapterhornClient, osmId, feature }) {
-  const coordinates = feature.coordinates && feature.coordinates.length > 0
-    ? feature.coordinates
-    : extractLineCoordinates(feature);
-  const { samples, totalDistanceMeters } = samplePolyline(coordinates);
-
-  if (samples.length < 2 || totalDistanceMeters <= 0) {
-    appState.setProfileError(osmId, 'Keine Liniengeometrie zum Auswerten.');
-    return;
-  }
-
-  appState.setProfileLoading(osmId);
-
-  try {
-    const result = await mapterhornClient.sampleProfile(samples);
-    const stats = computeStats(samples, result.elevations, totalDistanceMeters);
-    appState.setProfileData(osmId, {
-      samples,
-      elevations: result.elevations,
-      stats,
-      properties: feature.properties,
-    });
-  } catch (error) {
-    appState.setProfileError(osmId, error?.message || 'Höhenprofil konnte nicht geladen werden.');
-  }
 }
 
 function computeStats(samples, elevations, distanceMeters) {

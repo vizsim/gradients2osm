@@ -330,8 +330,9 @@ function addGradientLayers(map, regionUrls) {
       type: 'vector',
       url: regionUrls[region.id],
       attribution: regionIndex === 0
-        ? 'DEM <a href="https://mapterhorn.com" target="_blank" rel="noreferrer">Mapterhorn</a>'
-            + ' · Steigungen © gradients2osm'
+        ? 'Live-DEM <a href="https://mapterhorn.com" target="_blank" rel="noreferrer">Mapterhorn</a>'
+            + ' · Steigungen auf Basis von'
+            + ' <a href="https://sonny.4lima.de/" target="_blank" rel="noreferrer">Sonny DTM Germany 20 m</a>'
         : undefined,
     });
   });

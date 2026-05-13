@@ -153,6 +153,7 @@ function buildFingerprint(profileData, cssWidth, cssHeight, devicePixelRatio) {
   const sampleCount = profileData.samples?.length || 0;
   const buildingHits = (profileData.buildingOffsets || [])
     .reduce((sum, value) => sum + (value > 0 ? 1 : 0), 0);
+  const routeBoundaries = profileData.route?.cumulativeStartsMeters?.length || 0;
   return [
     sampleCount,
     stats.distanceMeters,
@@ -161,6 +162,7 @@ function buildFingerprint(profileData, cssWidth, cssHeight, devicePixelRatio) {
     stats.ascentMeters,
     stats.descentMeters,
     buildingHits,
+    routeBoundaries,
     cssWidth,
     cssHeight,
     devicePixelRatio,
@@ -228,6 +230,7 @@ function rebuildOffscreen(profileData, elevations, cssWidth, cssHeight, devicePi
   drawLine(context, terrainPoints, HEIGHTGRAPH_COLORS.terrainLine, 1.75);
   drawBuildingOverlay(context, terrainPoints, points, buildingOffsets);
   drawLine(context, points, HEIGHTGRAPH_COLORS.line, 2.5);
+  drawSegmentBoundaries(context, profileData.route, xAxis, graphWidth, graphHeight, padding);
   drawDistanceLabels(context, graphWidth, graphHeight, xAxis, padding);
 
   cache.cssWidth = cssWidth;
@@ -467,6 +470,31 @@ function drawRoundedRectPath(context, x, y, width, height, radius) {
   context.lineTo(x, y + radius);
   context.quadraticCurveTo(x, y, x + radius, y);
   context.closePath();
+}
+
+// Vertical separator at the start of each pinned segment (except the very
+// first). A short tick at the top + a faint full-height divider makes it
+// easy to see "this is where segment 2 starts" without dominating the chart.
+function drawSegmentBoundaries(context, route, xAxis, graphWidth, graphHeight, padding) {
+  if (!route?.cumulativeStartsMeters || route.cumulativeStartsMeters.length < 2) return;
+
+  context.save();
+  context.strokeStyle = 'rgba(99, 102, 241, 0.55)'; // indigo, subtle
+  context.setLineDash([3, 3]);
+  context.lineWidth = 1;
+
+  // Skip index 0 — that's just the origin.
+  for (let i = 1; i < route.cumulativeStartsMeters.length; i += 1) {
+    const distance = route.cumulativeStartsMeters[i];
+    if (distance > xAxis.max) continue;
+    const x = padding.left + (graphWidth * distance) / xAxis.max;
+    context.beginPath();
+    context.moveTo(x, padding.top);
+    context.lineTo(x, padding.top + graphHeight);
+    context.stroke();
+  }
+
+  context.restore();
 }
 
 function drawDistanceLabels(context, graphWidth, graphHeight, xAxis, padding) {

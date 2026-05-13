@@ -55,7 +55,9 @@ button {
   position: absolute;
   top: 16px;
   right: 16px;
-  bottom: 16px;
+  /* Leave a strip at the very bottom so the MapLibre attribution control
+     (bottom-right) isn't covered by the panel. */
+  bottom: 40px;
   width: 400px;
   max-width: calc(100vw - 32px);
   background: var(--bg-primary);
@@ -187,6 +189,124 @@ button {
   color: var(--text-secondary);
   font-size: 0.88rem;
   line-height: 1.45;
+}
+
+/* ------------------------- Route chips (multi-pin) ----------------------- */
+
+.route-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, #f5f3ff 0%, #ffffff 100%);
+  border: 1px solid #ddd6fe;
+  border-radius: 12px;
+}
+
+.route-chips[hidden] { display: none; }
+
+.route-chips-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.route-chips-header strong {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--store);
+}
+
+.route-chips-hint {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.route-chips-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.route-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 8px;
+  background: #ffffff;
+  border: 1px solid var(--border-primary);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  max-width: 100%;
+}
+
+.route-chip:hover {
+  border-color: var(--store);
+  transform: translateY(-1px);
+}
+
+.route-chip.is-focused {
+  border-color: var(--store);
+  box-shadow: 0 0 0 1px var(--store) inset;
+  background: #faf5ff;
+}
+
+.route-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.route-chip-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.route-chip-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+.route-chip-meta {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.route-chip-remove {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.05rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.route-chip-remove:hover {
+  background: rgba(124, 58, 237, 0.12);
+  color: var(--store);
 }
 
 /* ------------------------- Segment metadata ------------------------------ */
@@ -410,6 +530,21 @@ button {
   flex-direction: column;
   gap: 6px;
 }
+
+.store-block[hidden] { display: none; }
+
+.store-multi-pin-hint {
+  margin: 0;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px dashed #c4b5fd;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.store-multi-pin-hint[hidden] { display: none; }
 
 .store-block-title {
   margin: 0;
@@ -766,6 +901,52 @@ button {
   cursor: pointer;
 }
 .legend-filter-reset:hover { background: var(--bg-tertiary); }
+
+/* ------------------------- Panel footer (GitHub/Issues) ------------------ */
+
+.panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 10px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.panel-footer-badge {
+  height: 18px;
+  border-radius: 4px;
+}
+
+.panel-footer-links {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.panel-footer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.panel-footer-link:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.panel-footer-link svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
 
 .sr-only {
   position: absolute;

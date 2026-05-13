@@ -1,6 +1,19 @@
 // Single source of truth for the gradients viz. Subscribers re-render
 // whenever a setter runs. Keeps the map, profile panel, and hover indicator
 // in sync without ad-hoc cross-module wiring.
+//
+// Pinning model (v2 — multi-segment route):
+//   - `pinnedSegments` is an ordered list of segments the user has Ctrl+clicked
+//     into the current route. Each segment carries a `reversed` flag set by
+//     the caller (segmentHover) when the geometry's natural direction has to
+//     be flipped to chain with the previous segment's tail.
+//   - `focusedPinnedIndex` is which segment in the list is highlighted in the
+//     panel's "Details" view (PMTiles tags, slope distribution). Defaults to
+//     the most recently appended one.
+//   - `activeFeature` is a *derived* view-helper: it points at the focused
+//     pinned segment when something is pinned, or at the latest hovered
+//     segment when nothing is pinned. Pre-existing UI consumers keep
+//     working without knowing about the multi-pin model.
 
 const DEFAULT_GRADIENT_METRIC = 'gradient_smooth_pct';
 
@@ -21,19 +34,21 @@ export const BASEMAPS = ['positron', 'osm', 'satellite'];
 const DEFAULT_BASEMAP = 'positron';
 
 export function createAppState() {
-  // `activeFeature` / `profile*` describe what's shown in the panel — either
-  // pulled in by hover (transient) or pinned by a click (sticky). `pinned`
-  // flips the meaning: when true, hover stops updating activeFeature and
-  // instead only feeds `hoverIndicatorOsmId` for a secondary map highlight.
   let state = {
+    pinnedSegments: [],
+    focusedPinnedIndex: -1,
+    // The "active" view binding. When pinnedSegments is empty, this carries
+    // the hover preview. When non-empty, it's the focused pinned segment.
     activeFeature: null,
+    pinned: false,
+    hoverIndicatorOsmId: null,
+    // Profile of the *current route* (= all pinned segments concatenated)
+    // when pinned, OR of the hovered segment when not pinned.
     profileSegmentId: null,
     profileData: null,
     profileLoading: false,
     profileError: null,
     hoverSampleIndex: null,
-    pinned: false,
-    hoverIndicatorOsmId: null,
     gradientMetric: DEFAULT_GRADIENT_METRIC,
     gradientFilterMin: GRADIENT_FILTER_MIN,
     gradientFilterMax: GRADIENT_FILTER_MAX,
@@ -52,6 +67,23 @@ export function createAppState() {
     notify();
   };
 
+  // Reset profile-related fields together. Called whenever the route changes
+  // composition (new pin, removed pin, switched focus is NOT included since
+  // focus change doesn't change the underlying combined profile).
+  const resetProfile = () => ({
+    profileSegmentId: null,
+    profileData: null,
+    profileLoading: false,
+    profileError: null,
+    hoverSampleIndex: null,
+  });
+
+  const focusedFromList = (list, index) => {
+    if (!list.length) return null;
+    const safeIndex = Math.max(0, Math.min(index, list.length - 1));
+    return list[safeIndex];
+  };
+
   return {
     getState: () => state,
 
@@ -61,13 +93,14 @@ export function createAppState() {
       return () => subscribers.delete(subscriber);
     },
 
-    // Hover-driven activation. While pinned, this only updates the secondary
-    // highlight (different osm_id than the pinned one) and never displaces
-    // the pinned panel content.
+    // ── Hover (transient preview) ─────────────────────────────────────────
     applyHover(feature) {
       if (state.pinned) {
+        // While pinned, hover only feeds the secondary highlight on the map.
+        // It does NOT change the panel, nor trigger Mapterhorn fetches.
         const osmId = feature?.osmId ?? null;
-        const indicator = osmId === state.activeFeature?.osmId ? null : osmId;
+        const isAlreadyPinned = state.pinnedSegments.some((s) => s.osmId === osmId);
+        const indicator = osmId === null || isAlreadyPinned ? null : osmId;
         if (state.hoverIndicatorOsmId !== indicator) {
           update({ hoverIndicatorOsmId: indicator });
         }
@@ -88,59 +121,141 @@ export function createAppState() {
       }
       update({
         activeFeature: null,
-        profileSegmentId: null,
-        profileData: null,
-        profileLoading: false,
-        profileError: null,
-        hoverSampleIndex: null,
         hoverIndicatorOsmId: null,
+        ...resetProfile(),
       });
     },
 
-    // Click-driven activation. Toggles off if you click the same segment again.
+    // ── Pin: replace the entire route with [feature] ──────────────────────
     pinFeature(feature) {
       if (!feature) return;
-      const sameAsPinned = state.pinned && state.activeFeature?.osmId === feature.osmId;
-      if (sameAsPinned) {
+      // Click on the same segment that is currently the SOLE pin → toggle off.
+      const isSoloAndSame = state.pinnedSegments.length === 1
+        && state.pinnedSegments[0].osmId === feature.osmId;
+      if (isSoloAndSame) {
         update({
-          pinned: false,
+          pinnedSegments: [],
+          focusedPinnedIndex: -1,
           activeFeature: null,
-          profileSegmentId: null,
-          profileData: null,
-          profileLoading: false,
-          profileError: null,
-          hoverSampleIndex: null,
+          pinned: false,
           hoverIndicatorOsmId: null,
+          ...resetProfile(),
         });
         return;
       }
+      const next = { ...feature, reversed: false };
       update({
+        pinnedSegments: [next],
+        focusedPinnedIndex: 0,
+        activeFeature: next,
         pinned: true,
-        activeFeature: feature,
         hoverIndicatorOsmId: null,
-        // Reset profile so the caller knows to (re-)fetch.
-        profileSegmentId: null,
-        profileData: null,
-        profileLoading: false,
-        profileError: null,
-        hoverSampleIndex: null,
+        ...resetProfile(),
+      });
+    },
+
+    // ── Pin: toggle this segment in/out of the current route ─────────────
+    // segmentHover passes the feature with a `reversed` flag pre-computed
+    // from connectivity with the existing route's tail.
+    togglePinnedFeature(feature) {
+      if (!feature) return;
+      const existingIndex = state.pinnedSegments.findIndex((s) => s.osmId === feature.osmId);
+
+      if (existingIndex >= 0) {
+        // Remove this segment from the route.
+        const next = state.pinnedSegments.slice();
+        next.splice(existingIndex, 1);
+
+        if (next.length === 0) {
+          update({
+            pinnedSegments: [],
+            focusedPinnedIndex: -1,
+            activeFeature: null,
+            pinned: false,
+            hoverIndicatorOsmId: null,
+            ...resetProfile(),
+          });
+          return;
+        }
+
+        // Keep focus on something reasonable: clamp to last index if the
+        // removed one was at or beyond it.
+        const newFocus = Math.min(state.focusedPinnedIndex, next.length - 1);
+        update({
+          pinnedSegments: next,
+          focusedPinnedIndex: newFocus,
+          activeFeature: focusedFromList(next, newFocus),
+          pinned: true,
+          hoverIndicatorOsmId: null,
+          ...resetProfile(),
+        });
+        return;
+      }
+
+      // Append new segment to the route. `reversed` was decided by the caller
+      // (segmentHover) based on connectivity to the previous tail.
+      const augmented = { ...feature };
+      const next = [...state.pinnedSegments, augmented];
+      update({
+        pinnedSegments: next,
+        focusedPinnedIndex: next.length - 1,
+        activeFeature: augmented,
+        pinned: true,
+        hoverIndicatorOsmId: null,
+        ...resetProfile(),
+      });
+    },
+
+    setFocusedPinnedIndex(index) {
+      if (!state.pinned) return;
+      if (index < 0 || index >= state.pinnedSegments.length) return;
+      if (index === state.focusedPinnedIndex) return;
+      update({
+        focusedPinnedIndex: index,
+        activeFeature: state.pinnedSegments[index],
+      });
+    },
+
+    removePinnedAt(index) {
+      if (!state.pinned) return;
+      if (index < 0 || index >= state.pinnedSegments.length) return;
+      const next = state.pinnedSegments.slice();
+      next.splice(index, 1);
+      if (next.length === 0) {
+        update({
+          pinnedSegments: [],
+          focusedPinnedIndex: -1,
+          activeFeature: null,
+          pinned: false,
+          hoverIndicatorOsmId: null,
+          ...resetProfile(),
+        });
+        return;
+      }
+      const newFocus = Math.min(state.focusedPinnedIndex, next.length - 1);
+      update({
+        pinnedSegments: next,
+        focusedPinnedIndex: newFocus,
+        activeFeature: focusedFromList(next, newFocus),
+        pinned: true,
+        hoverIndicatorOsmId: null,
+        ...resetProfile(),
       });
     },
 
     unpin() {
       if (!state.pinned) return;
       update({
-        pinned: false,
+        pinnedSegments: [],
+        focusedPinnedIndex: -1,
         activeFeature: null,
-        profileSegmentId: null,
-        profileData: null,
-        profileLoading: false,
-        profileError: null,
-        hoverSampleIndex: null,
+        pinned: false,
         hoverIndicatorOsmId: null,
+        ...resetProfile(),
       });
     },
 
+    // ── Profile (Mapterhorn) state ────────────────────────────────────────
     setProfileLoading(segmentId) {
       update({
         profileSegmentId: segmentId,
@@ -176,6 +291,7 @@ export function createAppState() {
       update({ hoverSampleIndex: index });
     },
 
+    // ── Map preferences ───────────────────────────────────────────────────
     setGradientMetric(metric) {
       if (!GRADIENT_METRICS.some((m) => m.id === metric)) return;
       if (state.gradientMetric === metric) return;
@@ -210,8 +326,6 @@ export function createAppState() {
       };
       const nextMin = clamp(min, state.gradientFilterMin);
       const nextMax = clamp(max, state.gradientFilterMax);
-      // Keep at least one step between thumbs so the user can always grab
-      // either side; collapse-to-zero would render the slider unusable.
       const safeMin = Math.min(nextMin, nextMax);
       const safeMax = Math.max(nextMin, nextMax);
       if (safeMin === state.gradientFilterMin && safeMax === state.gradientFilterMax) return;

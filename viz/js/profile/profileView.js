@@ -37,7 +37,6 @@ export function setupProfileView(appState) {
   const rendered = {
     activeOsmId: undefined,
     gradientListKey: undefined,
-    pickerMetric: undefined,
     profileSegmentId: undefined,
     profileMode: undefined, // 'loading' | 'error' | 'data' | 'empty'
     profileErrorMessage: undefined,
@@ -45,7 +44,10 @@ export function setupProfileView(appState) {
     showNote: undefined,
     showLive: undefined,
     showStore: undefined,
+    storeAggregateMode: undefined,
     hoverSampleIndex: undefined,
+    routeChipsKey: undefined,
+    routeChipsFocusKey: undefined,
   };
 
   if (dom.unpinButton) {
@@ -68,6 +70,25 @@ export function setupProfileView(appState) {
       if (!item) return;
       event.preventDefault();
       appState.setGradientMetric(item.dataset.metric);
+    });
+  }
+
+  // Route chips: click a chip = focus that segment's details; click the X =
+  // drop that segment from the route. Delegation on the list so we don't
+  // need to rebind per re-render.
+  if (dom.routeChipsList) {
+    dom.routeChipsList.addEventListener('click', (event) => {
+      const removeBtn = event.target.closest('.route-chip-remove');
+      if (removeBtn) {
+        event.stopPropagation();
+        const idx = Number(removeBtn.dataset.index);
+        if (Number.isInteger(idx)) appState.removePinnedAt(idx);
+        return;
+      }
+      const chip = event.target.closest('.route-chip[data-index]');
+      if (!chip) return;
+      const idx = Number(chip.dataset.index);
+      if (Number.isInteger(idx)) appState.setFocusedPinnedIndex(idx);
     });
   }
 
@@ -121,6 +142,12 @@ function cacheDom() {
     slopeBarFwd: document.getElementById('slope-bar-fwd'),
     slopeBarBwd: document.getElementById('slope-bar-bwd'),
     metricPickerButtons: Array.from(document.querySelectorAll('.metric-picker-btn')),
+    routeChips: document.getElementById('route-chips'),
+    routeChipsList: document.getElementById('route-chips-list'),
+    routeChipsTitle: document.getElementById('route-chips-title'),
+    routeChipsHint: document.getElementById('route-chips-hint'),
+    storeMultiPinHint: document.getElementById('store-multi-pin-hint'),
+    storeBlocks: Array.from(document.querySelectorAll('#store-section .store-block')),
   };
 }
 
@@ -200,6 +227,18 @@ function renderUi(dom, rendered, state) {
     rendered.showStore = showStore;
   }
 
+  // When ≥2 segments are pinned, hide the per-segment PMTiles data blocks
+  // and show a hint instead — naively length-weighted aggregations across
+  // multiple ways tend to be misleading more than they help.
+  const aggregateMode = (state.pinnedSegments?.length ?? 0) >= 2;
+  if (rendered.storeAggregateMode !== aggregateMode) {
+    if (dom.storeMultiPinHint) dom.storeMultiPinHint.hidden = !aggregateMode;
+    for (const block of dom.storeBlocks) {
+      block.hidden = aggregateMode;
+    }
+    rendered.storeAggregateMode = aggregateMode;
+  }
+
   // ── Live section content (profile data, height summary, heightgraph) ──
   renderLiveSection(dom, rendered, state);
 
@@ -219,20 +258,124 @@ function renderUi(dom, rendered, state) {
     rendered.gradientListKey = undefined;
   }
 
-  // Gradient list depends on BOTH the active feature AND the picked metric
-  // (to highlight the active row).
-  const gradientListKey = props ? `${activeOsmId}|${state.gradientMetric}` : null;
-  if (props && rendered.gradientListKey !== gradientListKey) {
+  // Gradient list DOM is expensive (3 × N elements per item), so we only
+  // rebuild it when the active segment changes — the values inside depend
+  // on `props`, not on the picked metric. The is-active highlight is a
+  // separate concern below.
+  if (props && rendered.gradientListKey !== activeOsmId) {
     renderGradientList(dom.gradientList, props, state.gradientMetric);
-    rendered.gradientListKey = gradientListKey;
+    rendered.gradientListKey = activeOsmId;
   }
 
-  // Metric picker selection — cheap, but skip the loop if metric didn't move.
-  if (rendered.pickerMetric !== state.gradientMetric) {
-    for (const btn of dom.metricPickerButtons) {
-      btn.classList.toggle('selected', btn.dataset.metric === state.gradientMetric);
+  // is-active highlight in the list + .selected on the picker buttons —
+  // both reflect the same `state.gradientMetric`. We always sync them
+  // unconditionally (no `rendered.pickerMetric` gating): three class
+  // toggles each is essentially free, and a single source of truth means
+  // the picker and the list cannot drift out of sync.
+  if (props && dom.gradientList) {
+    const listItems = dom.gradientList.querySelectorAll('.metric-list-item[data-metric]');
+    for (const item of listItems) {
+      item.classList.toggle('is-active', item.dataset.metric === state.gradientMetric);
     }
-    rendered.pickerMetric = state.gradientMetric;
+  }
+  for (const btn of dom.metricPickerButtons) {
+    btn.classList.toggle('selected', btn.dataset.metric === state.gradientMetric);
+  }
+
+  renderRouteChips(dom, rendered, state);
+}
+
+function renderRouteChips(dom, rendered, state) {
+  if (!dom.routeChips || !dom.routeChipsList) return;
+
+  const pinned = state.pinnedSegments || [];
+  // Composition key: rebuild the chip DOM only when the route changes
+  // composition (osm_ids in order). Focus moves use a separate key so we
+  // only restyle the `.is-focused` flag without recreating chips.
+  const compositionKey = pinned.map((s) => `${s.regionId}:${s.osmId}`).join('|');
+  const focusKey = `${state.focusedPinnedIndex}`;
+
+  // The chips bar is only useful in route mode (≥2 pinned). For a single
+  // pin the segment-meta block below already shows everything; the chips
+  // bar would just duplicate the name.
+  if (pinned.length < 2) {
+    if (rendered.routeChipsKey !== '') {
+      dom.routeChips.hidden = true;
+      dom.routeChipsList.replaceChildren();
+      rendered.routeChipsKey = '';
+      rendered.routeChipsFocusKey = '';
+    }
+    return;
+  }
+
+  if (rendered.routeChipsKey !== compositionKey) {
+    dom.routeChipsList.replaceChildren();
+    pinned.forEach((seg, index) => {
+      const chip = document.createElement('li');
+      chip.className = 'route-chip';
+      chip.dataset.index = String(index);
+      chip.setAttribute('role', 'button');
+      chip.setAttribute('tabindex', '0');
+      chip.setAttribute('title', 'Klick: Details · X: aus Route entfernen');
+
+      const dot = document.createElement('span');
+      dot.className = 'route-chip-dot';
+      const gradPct = readNumber(seg.properties?.gradient_smooth_pct);
+      if (gradPct !== null) {
+        dot.style.background = colorForGradient(Math.abs(gradPct));
+      }
+
+      const name = document.createElement('span');
+      name.className = 'route-chip-name';
+      name.textContent = seg.properties?.name
+        || seg.properties?.ref
+        || (seg.properties?.highway ? labelHighway(seg.properties.highway) : `Way ${seg.osmId}`);
+
+      const length = readNumber(seg.properties?.length_m);
+      const meta = document.createElement('span');
+      meta.className = 'route-chip-meta';
+      meta.textContent = length !== null ? formatDistance(length) : '';
+
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'route-chip-remove';
+      remove.dataset.index = String(index);
+      remove.setAttribute('aria-label', `Segment ${index + 1} entfernen`);
+      remove.textContent = '×';
+
+      chip.append(dot, name, meta, remove);
+      dom.routeChipsList.appendChild(chip);
+    });
+    rendered.routeChipsKey = compositionKey;
+    rendered.routeChipsFocusKey = ''; // force focus-style sync below
+  }
+
+  if (rendered.routeChipsFocusKey !== focusKey) {
+    const children = dom.routeChipsList.children;
+    for (let i = 0; i < children.length; i += 1) {
+      children[i].classList.toggle('is-focused', i === state.focusedPinnedIndex);
+    }
+    rendered.routeChipsFocusKey = focusKey;
+  }
+
+  dom.routeChips.hidden = false;
+  dom.routeChipsTitle.textContent = `Route · ${pinned.length} Segmente`;
+
+  // Aggregate hint: PMTiles sums (length / gain / loss) across the route.
+  if (dom.routeChipsHint) {
+    const totalLength = pinned.reduce((sum, s) => {
+      const len = readNumber(s.properties?.length_m);
+      return sum + (len ?? 0);
+    }, 0);
+    const totalGain = pinned.reduce((sum, s) => {
+      const g = readNumber(s.properties?.elevation_gain_m);
+      return sum + (g ?? 0);
+    }, 0);
+    const totalLoss = pinned.reduce((sum, s) => {
+      const l = readNumber(s.properties?.elevation_loss_m);
+      return sum + (l ?? 0);
+    }, 0);
+    dom.routeChipsHint.textContent = `${formatDistance(totalLength)} · ↑ ${formatHeight(totalGain)} · ↓ ${formatHeight(totalLoss)}`;
   }
 }
 
