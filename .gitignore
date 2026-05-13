@@ -1,0 +1,73 @@
+# --- OSM / Geodaten ---
+# Rohdaten und Extrakte (groß, extern beziehbar)
+*.osm.pbf
+*.osm.bz2
+*.osm.gz
+*.osm
+*.o5m
+*.osc
+*.tif
+
+# --- Projekt-Output ---
+# Generierte Gradienten-Daten (aus way_gradients.py)
+output/
+out/
+results/
+data/processed/
+*.gpkg
+*.csv
+viz/data/*.pmtiles
+
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Test / Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- Editor / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs / temp ---
+*.log
+*.tmp
+*.bak

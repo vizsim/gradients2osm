@@ -1,0 +1,14 @@
+[project]
+name = "gradients2osm"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "geopandas>=1.1.3",
+    "numpy>=2.4.4",
+    "osmium>=4.3.1",
+    "pyogrio>=0.12.1",
+    "pyproj>=3.7.2",
+    "rasterio>=1.5.0",
+    "shapely>=2.1.2",
+    "tqdm>=4.67.3",
+]
