@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Build a PMTiles archive from a gradients GeoPackage so the viz can serve
+# Build a PMTiles archive from a gradients FlatGeobuf so the viz can serve
 # vector tiles directly from disk (or any static host) without a tile server.
 #
 # Usage:
-#   ./build_pmtiles.sh ../../output/berlin_gradients_20_neu3.gpkg
-#   ./build_pmtiles.sh ../../output/berlin_gradients_20_neu3.gpkg berlin
+#   ./build_pmtiles.sh ../../output/berlin_gradients_20_neu3.fgb
+#   ./build_pmtiles.sh ../../output/berlin_gradients_20_neu3.fgb berlin
 #
-# Requires: ogr2ogr (GDAL) and tippecanoe on PATH.
+# Requires: tippecanoe on PATH (>= 2.x with FlatGeobuf input support).
 
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <input.gpkg> [name]" >&2
+  echo "usage: $0 <input.fgb> [name]" >&2
   exit 1
 fi
 
@@ -25,48 +25,38 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/data"
 mkdir -p "$DATA_DIR"
 
-BASENAME="${2:-$(basename "$INPUT" .gpkg)}"
-GEOJSONL="$DATA_DIR/$BASENAME.geojsonl"
+BASENAME="${2:-$(basename "$INPUT" .fgb)}"
 PMTILES="$DATA_DIR/$BASENAME.pmtiles"
-
-echo ">> ogr2ogr -> $GEOJSONL"
-# Project to WGS84 (input already is, but make it explicit) and emit
-# newline-delimited GeoJSON which streams cheaply into tippecanoe.
-# Drop the large tags_json blob so vector tiles stay compact; the viz only
-# uses the structured columns for hover stats.
-ogr2ogr \
-  -f GeoJSONSeq \
-  -t_srs EPSG:4326 \
-  -select "osm_id,length_m,gradient_abs_avg_pct,gradient_smooth_pct,gradient_endpoint_pct,elevation_gain_m,elevation_loss_m,n_samples,is_bridge_or_tunnel,is_bridge_adjacent,is_implausible_grad,slope_1_fwd_pct,slope_1_bwd_pct,slope_2_fwd_pct,slope_2_bwd_pct,slope_3_fwd_pct,slope_3_bwd_pct,slope_4_fwd_pct,slope_4_bwd_pct,highway,name,ref,surface,smoothness,maxspeed,oneway,bridge,tunnel" \
-  -lco RS=NO \
-  "$GEOJSONL" \
-  "$INPUT"
 
 echo ">> tippecanoe -> $PMTILES"
 # Density per zoom is steered solely by the highway-class filter in -j.
-# No feature dropping, no Douglas-Peucker line simplification:
-#   --no-line-simplification    : disables the per-zoom geometry simplifier
-#                                 that tippecanoe runs by default below maxzoom.
-#   --no-tile-size-limit / -fl  : let tiles grow as big as they need to so
-#                                 tippecanoe never has to coalesce or drop
-#                                 to fit a 500 KB budget.
+# -x tags_json drops the large free-form-tag blob; the viz only uses the
+# structured columns for hover stats. (-X with capital X would exclude
+# ALL attributes — easy to confuse, hence the comment.)
 # --coalesce-densest-as-needed is intentionally NOT used: it would merge
 # multiple ways into one MultiLineString and break per-way hover identity.
+#
+# Zoom plan:
+#   z6-7   : motorway, trunk, primary  (Autobahnen, Schnellstraßen, Hauptstraßen)
+#   z8-10  : + secondary, tertiary
+#   z11-12 : + residential, unclassified, living_street, pedestrian, cycleway
+#   z13    : alles außer den ausgeschlossenen highway-Klassen (max-zoom,
+#            wird im Viewer überzoomt; ersetzt das frühere max=14 +
+#            base=13 für deutlich kompaktere Tiles bei minimal weniger
+#            Detail in der höchsten Zoomstufe).
 tippecanoe \
   -o "$PMTILES" \
   --force \
   --layer=ways \
-  --minimum-zoom=8 \
-  --maximum-zoom=14 \
-  --base-zoom=13 \
+  --minimum-zoom=6 \
+  --maximum-zoom=13 \
+  --base-zoom=12 \
   --no-tile-size-limit \
   --no-feature-limit \
   --read-parallel \
-  -j '{"ways":["all",["!in","highway","service","footway","path","steps","bridleway","corridor","construction","proposed"],["any",[">=","$zoom",13],["all",[">=","$zoom",11],["in","highway","motorway","trunk","primary","secondary","tertiary","residential","unclassified","living_street","pedestrian","cycleway"]],["in","highway","motorway","trunk","primary","secondary","tertiary"]]]}' \
-  "$GEOJSONL"
-
-# The .geojsonl is only an intermediate; tippecanoe already consumed it.
-rm -f "$GEOJSONL"
+  -x tags_json \
+  -j '{"ways":["all",["!in","highway","service","footway","path","steps","bridleway","corridor","construction","proposed"],["any",[">=","$zoom",13],["all",[">=","$zoom",11],["in","highway","motorway","trunk","primary","secondary","tertiary","residential","unclassified","living_street","pedestrian","cycleway"]],["all",[">=","$zoom",8],["in","highway","motorway","trunk","primary","secondary","tertiary"]],["in","highway","motorway","trunk","primary"]]]}' \
+  "$INPUT"
 
 echo ">> done: $PMTILES"
 ls -lh "$PMTILES"

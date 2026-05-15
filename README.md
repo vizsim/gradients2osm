@@ -2,11 +2,11 @@
 
 Berechnet pro OSM-Way **drei verschiedene Steigungs-Metriken** sowie Elevation Gain und Loss aus einem GeoTIFF-Höhenmodell (z.B. Sonny LiDAR DTM, ASTER GDEM, EU-DEM, Copernicus GLO-30).
 
-Streaming-Verarbeitung über `pyosmium` und `rasterio`. Optionaler GeoPackage-Output für QGIS-Workflows. Mitgeliefert: ein Analyse-Skript zur Plausibilitäts-Prüfung der CSV-Outputs.
+Streaming-Verarbeitung über `pyosmium` und `rasterio`. Optionaler FlatGeobuf-Output für die Tile-Pipeline und QGIS. Mitgeliefert: ein Analyse-Skript zur Plausibilitäts-Prüfung der CSV-Outputs.
 
 ## Was rauskommt
 
-Das Tool schreibt immer eine CSV mit den Höhenmetriken und kann zusätzlich ein GeoPackage mit Geometrie und OSM-Tags ausgeben.
+Das Tool schreibt immer eine CSV mit den Höhenmetriken und kann zusätzlich ein FlatGeobuf mit Geometrie und OSM-Tags ausgeben.
 
 ### CSV-Spalten
 
@@ -46,7 +46,7 @@ Das Tool schreibt immer eine CSV mit den Höhenmetriken und kann zusätzlich ein
 - **Implausibel steile Ways**: Werte `gradient_smooth_pct > 30 %` werden nicht gekappt, sondern in `is_implausible_grad` markiert. Ist meistens entweder ein DEM-Artefakt (Kante zu einem Gebäude, Felswand) oder eine echte sehr steile Forst-/Almstraße.
 - **DEM-Lücken** (NoData): NaN-Höhen werden in `savgol_smooth` und `gradient_endpoint_pct` linear interpoliert, damit nicht der ganze Way ausfällt. Wenn alle Samples NoData sind, bleiben alle drei Gradient-Spalten leer.
 
-### GeoPackage-Spalten (optional)
+### FlatGeobuf-Spalten (optional)
 
 Enthält alle CSV-Spalten plus:
 
@@ -61,7 +61,7 @@ Empfohlen mit [uv](https://github.com/astral-sh/uv):
 ```bash
 uv init --bare
 uv add numpy osmium rasterio pyproj tqdm
-# Nur falls --out-gpkg genutzt wird:
+# Nur falls --out-fgb genutzt wird:
 uv add geopandas shapely pyogrio
 ```
 
@@ -78,17 +78,17 @@ uv run python way_gradients.py \
     --out output/saarland_gradients.csv
 ```
 
-### Mit GeoPackage für QGIS
+### Mit FlatGeobuf für Tile-Pipeline und QGIS
 
 ```bash
 uv run python way_gradients.py \
     --pbf input/saarland-260122-highways.osm.pbf \
     --dem "input/DTM Germany 20m v3b by Sonny.tif" \
     --out output/saarland_gradients.csv \
-    --out-gpkg output/saarland_gradients.gpkg
+    --out-fgb output/saarland_gradients.fgb
 ```
 
-Das GeoPackage ist räumlich sortiert (Hilbert-Curve) und enthält einen R-Tree-Index — Pan/Zoom und Symbology-Operationen sind in QGIS deutlich flotter als bei nicht-indizierten Formaten.
+Das FlatGeobuf ist räumlich sortiert (Hilbert-Curve). Tippecanoe liest FGB direkt — `viz/preprocessing/build_pmtiles.sh` braucht damit keinen ogr2ogr-Zwischenschritt mehr. QGIS liest FGB ebenfalls; der Spatial-Index wird beim ersten Öffnen automatisch aufgebaut.
 
 ### Mit Geometrie-Vereinfachung (für schnelleres QGIS-Rendering)
 
@@ -97,7 +97,7 @@ uv run python way_gradients.py \
     --pbf input/saarland-260122-highways.osm.pbf \
     --dem "input/DTM Germany 20m v3b by Sonny.tif" \
     --out output/saarland_gradients.csv \
-    --out-gpkg output/saarland_gradients.gpkg \
+    --out-fgb output/saarland_gradients.fgb \
     --simplify-m 5
 ```
 
@@ -132,9 +132,9 @@ uv run python way_gradients.py \
 | `--pbf` | *required* | Eingabe-OSM-PBF-Datei. |
 | `--dem` | *required* | GeoTIFF mit Höhendaten. CRS wird automatisch erkannt. |
 | `--out` | *required* | Ziel-Pfad für die CSV. |
-| `--out-gpkg` | — | Optional: Ziel-Pfad für das GeoPackage. Ohne Angabe wird kein GPKG geschrieben. |
+| `--out-fgb` | — | Optional: Ziel-Pfad für das FlatGeobuf. Ohne Angabe wird kein FGB geschrieben. |
 | `--resample-m` | `25.0` | Maximaler Abstand zwischen Höhen-Stützpunkten in Metern. Sollte ungefähr der DEM-Zellgröße entsprechen — Sampling deutlich feiner als das DEM fügt nur Rauschen hinzu, kein Signal. Niedriger = genauer, langsamer. |
-| `--simplify-m` | `0.0` | Douglas-Peucker-Toleranz in Metern für die Geometrie im GPKG. 0 = keine Vereinfachung. Sinnvolle Werte: 2-10. Beeinflusst **nicht** die Höhenberechnung. |
+| `--simplify-m` | `0.0` | Douglas-Peucker-Toleranz in Metern für die Geometrie im FGB. 0 = keine Vereinfachung. Sinnvolle Werte: 2-10. Beeinflusst **nicht** die Höhenberechnung. |
 | `--target-crs` | `EPSG:25832` | Metrisches CRS für Längen- und Resampling-Berechnungen. Default ist UTM32N (passt für Deutschland). |
 | `--sample-method` | `bilinear` | Höhen-Sampling-Methode: `bilinear` (Default) oder `nearest`. Bilinear interpoliert aus den 4 umliegenden Pixeln und reduziert den DEM-Sample-Rauschanteil deutlich (auf einem 20-m-DEM ist `gradient_abs_avg_pct` ca. 30 % niedriger auf flachem Gelände). `nearest` entspricht dem ursprünglichen `rasterio.sample()`-Verhalten und ist v.a. zum Reproduzieren alter Outputs sinnvoll. |
 | `--min-length-m` | `15.0` | Mindestlänge in Metern, ab der überhaupt eine Steigung berechnet wird. Kürzere Ways bekommen alle drei Gradient-Spalten leer (Mikro-Ways sind extrem rauschanfällig). |
@@ -271,16 +271,16 @@ uv run python way_gradients.py \
     --pbf input/saarland-260122-highways.osm.pbf \
     --dem "input/DTM Germany 20m v3b by Sonny.tif" \
     --out output/saarland_gradients.csv \
-    --out-gpkg output/saarland_gradients.gpkg \
+    --out-fgb output/saarland_gradients.fgb \
     --simplify-m 5
 ```
 
-In QGIS das GPKG öffnen und z.B. Graduated Symbology auf `gradient_smooth_pct` setzen. Ways mit `is_implausible_grad = 1` separat einfärben, um Verdachtsfälle direkt zu sehen. Für Routing-Anwendungen können die `slope_*_fwd/bwd_pct`-Spalten direkt als Cost-Inputs in OpenTripPlanner o.ä. eingebunden werden.
+In QGIS das FGB öffnen und z.B. Graduated Symbology auf `gradient_smooth_pct` setzen. Ways mit `is_implausible_grad = 1` separat einfärben, um Verdachtsfälle direkt zu sehen. Für Routing-Anwendungen können die `slope_*_fwd/bwd_pct`-Spalten direkt als Cost-Inputs in OpenTripPlanner o.ä. eingebunden werden.
 
 ## Performance-Hinweise
 
 - **Streaming-Verarbeitung**: Die CSV wird zeilenweise geschrieben, kein RAM-Sammeln. Funktioniert auch für große Extrakte (Deutschland o.ä.).
-- **GeoPackage hält Records im Speicher**: Bei `--out-gpkg` werden alle Datensätze für den finalen Write gepuffert. Für Saarland (~80k Ways) unkritisch. Bei Deutschland-Größenordnung (mehrere Millionen Ways) wird das zum Thema — dann nur CSV nutzen oder das Tool tile-weise laufen lassen.
+- **FlatGeobuf hält Records im Speicher**: Bei `--out-fgb` werden alle Datensätze für den finalen Write gepuffert. Für Saarland (~80k Ways) unkritisch. Bei Deutschland-Größenordnung (mehrere Millionen Ways) wird das zum Thema — dann nur CSV nutzen oder das Tool tile-weise laufen lassen.
 - **Vorfilterung mit `osmium tags-filter` ist quasi Pflicht** für alles ab Bundesland-Größe.
 - **DEM-CRS und Target-CRS**: Wenn beide übereinstimmen, sparst du dir eine Hin-und-Rück-Reprojektion pro Sample. Sonny-DTMs liegen typischerweise in UTM32N (EPSG:32632) vor, was zur Default-Konfiguration passt.
 - **Resampling vs. DEM-Auflösung**: Bei einem 20-m-DEM bringt `--resample-m` deutlich unter 20 kein zusätzliches Signal, nur mehr Rauschen und mehr Rechenzeit. Default 25 ist ein vernünftiger Kompromiss; bei einem 50-m-DEM lieber `--resample-m 50` und passend dazu z.B. `--smooth-window 7` setzen.

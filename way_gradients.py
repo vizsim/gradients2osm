@@ -32,9 +32,10 @@ Methodik:
   is_implausible_grad markiert (Werte bleiben erhalten, kein Capping).
 - Brücken und Tunnel werden geflaggt und mit Steigung/Gain/Loss = 0 belegt.
 - Streaming-Verarbeitung in die CSV — kein Sammeln im RAM.
-- Optionaler GeoPackage-Output mit Geometrie + OSM-Tags + Höhenmetriken.
-  Empfohlen für QGIS-Workflows (eingebauter R-Tree-Spatial-Index).
-  Achtung: GPKG wird am Ende in einem Rutsch geschrieben, dafür müssen
+- Optionaler FlatGeobuf-Output mit Geometrie + OSM-Tags + Höhenmetriken.
+  Direkt von Tippecanoe lesbar (Tile-Pipeline) und in QGIS verwendbar
+  (Index wird beim ersten Öffnen aufgebaut).
+  Achtung: FGB wird am Ende in einem Rutsch geschrieben, dafür müssen
   die Way-Datensätze im Speicher gehalten werden. Für Saarland-Größenordnung
   unproblematisch.
 
@@ -45,7 +46,7 @@ Empfohlener Vorverarbeitungsschritt für große PBFs (Deutschland o.ä.):
 Voraussetzungen:
     uv init --bare
     uv add numpy osmium rasterio pyproj tqdm
-    # Nur für --out-gpkg zusätzlich:
+    # Nur für --out-fgb zusätzlich:
     uv add geopandas shapely pyogrio
 
 Aufruf:
@@ -53,7 +54,7 @@ Aufruf:
         --pbf input/saarland-260122-highways.osm.pbf \
         --dem "input/DTM Germany 50m v3b by Sonny.tif" \
         --out output/saarland_gradients.csv \
-        --out-gpkg output/saarland_gradients.gpkg \
+        --out-fgb output/saarland_gradients.fgb \
         --resample-m 25 \
         --target-crs EPSG:25832
 """
@@ -554,7 +555,7 @@ def fmt(value: float | None, digits: int) -> str:
 class StreamingHandler(osmium.SimpleHandler):
     """
     Verarbeitet jeden relevanten Way direkt und schreibt eine CSV-Zeile.
-    Sammelt optional Datensätze für GeoPackage-Output, wenn collect_geo=True.
+    Sammelt optional Datensätze für FlatGeobuf-Output, wenn collect_geo=True.
     """
 
     def __init__(
@@ -771,10 +772,10 @@ def count_relevant_ways(pbf_path: Path) -> tuple[int, set[int]]:
     return counter.count, counter.decoupled_endnodes
 
 
-def check_gpkg_deps() -> None:
+def check_fgb_deps() -> None:
     """
-    Prüft Abhängigkeiten für GeoPackage-Output.
-    GPKG braucht geopandas + shapely + (pyogrio oder fiona) für den Write-Driver.
+    Prüft Abhängigkeiten für FlatGeobuf-Output.
+    FGB braucht geopandas + shapely + (pyogrio oder fiona) für den Write-Driver.
     """
     missing = []
     try:
@@ -803,7 +804,7 @@ def check_gpkg_deps() -> None:
 
     if missing:
         raise SystemExit(
-            "Für --out-gpkg fehlen Abhängigkeiten: "
+            "Für --out-fgb fehlen Abhängigkeiten: "
             + ", ".join(missing)
             + "\nInstalliere mit: pip install "
             + " ".join(m for m in missing if "oder" not in m)
@@ -904,16 +905,17 @@ def build_geodataframe(records: list[dict], simplify_m: float = 0.0):
     return gdf
 
 
-def write_geopackage(records: list[dict], out_path: Path, simplify_m: float = 0.0) -> None:
+def write_flatgeobuf(records: list[dict], out_path: Path, simplify_m: float = 0.0) -> None:
     """
-    Schreibt ein GeoPackage. Für QGIS-Workflows in der Regel die schnellste
-    Option zum Rendern und Stylen, weil GeoPackage einen eingebauten
-    R-Tree-Spatial-Index hat und QGIS diesen direkt nutzt.
+    Schreibt ein FlatGeobuf. Tippecanoe kann FGB direkt einlesen — der
+    geojsonl-Zwischenschritt entfällt damit komplett in der Tile-Pipeline.
+    QGIS liest FGB ebenfalls; ein Spatial-Index wird beim ersten Öffnen
+    automatisch aufgebaut.
     """
     gdf = build_geodataframe(records, simplify_m=simplify_m)
-    log.info("Schreibe GeoPackage nach %s ...", out_path)
-    gdf.to_file(out_path, layer="way_gradients", driver="GPKG")
-    log.info("GeoPackage geschrieben: %s (%d Zeilen)", out_path, len(gdf))
+    log.info("Schreibe FlatGeobuf nach %s ...", out_path)
+    gdf.to_file(out_path, driver="FlatGeobuf")
+    log.info("FlatGeobuf geschrieben: %s (%d Zeilen)", out_path, len(gdf))
 
 
 def main() -> None:
@@ -922,13 +924,13 @@ def main() -> None:
     parser.add_argument("--dem", required=True, type=Path, help="GeoTIFF mit Höhen")
     parser.add_argument("--out", required=True, type=Path, help="Ziel-CSV")
     parser.add_argument(
-        "--out-gpkg",
+        "--out-fgb",
         type=Path,
         default=None,
         help=(
-            "Optional: Ziel-Pfad für GeoPackage mit Geometrie, OSM-Tags und "
-            "Höhenmetriken (EPSG:4326). Empfohlen für QGIS-Workflows wegen "
-            "eingebautem R-Tree-Spatial-Index."
+            "Optional: Ziel-Pfad für FlatGeobuf mit Geometrie, OSM-Tags und "
+            "Höhenmetriken (EPSG:4326). Direkt von Tippecanoe lesbar; "
+            "auch in QGIS verwendbar."
         ),
     )
     parser.add_argument(
@@ -1008,8 +1010,8 @@ def main() -> None:
     args.pbf = resolve_input_path(args.pbf)
     args.dem = resolve_input_path(args.dem)
     args.out = resolve_output_path(args.out)
-    if args.out_gpkg is not None:
-        args.out_gpkg = resolve_output_path(args.out_gpkg)
+    if args.out_fgb is not None:
+        args.out_fgb = resolve_output_path(args.out_fgb)
 
     if not args.pbf.exists():
         raise SystemExit(f"PBF nicht gefunden: {args.pbf}")
@@ -1017,11 +1019,11 @@ def main() -> None:
         raise SystemExit(f"DEM nicht gefunden: {args.dem}")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    if args.out_gpkg is not None:
-        args.out_gpkg.parent.mkdir(parents=True, exist_ok=True)
+    if args.out_fgb is not None:
+        args.out_fgb.parent.mkdir(parents=True, exist_ok=True)
 
-    if args.out_gpkg is not None:
-        check_gpkg_deps()
+    if args.out_fgb is not None:
+        check_fgb_deps()
 
     print_welcome_banner()
     log.info("Öffne DEM %s ...", args.dem)
@@ -1032,12 +1034,12 @@ def main() -> None:
         to_metric = Transformer.from_crs("EPSG:4326", args.target_crs, always_xy=True)
         to_dem = Transformer.from_crs(args.target_crs, dem_crs, always_xy=True)
 
-        collect_records = args.out_gpkg is not None
+        collect_records = args.out_fgb is not None
         if collect_records:
             log.info(
-                "GeoPackage-Output aktiviert (%s). Datensätze werden im "
+                "FlatGeobuf-Output aktiviert (%s). Datensätze werden im "
                 "Speicher gehalten.",
-                args.out_gpkg,
+                args.out_fgb,
             )
 
         total_ways, decoupled_endnodes = count_relevant_ways(args.pbf)
@@ -1072,8 +1074,8 @@ def main() -> None:
             args.out,
         )
 
-        if args.out_gpkg is not None:
-            write_geopackage(handler.records, args.out_gpkg, simplify_m=args.simplify_m)
+        if args.out_fgb is not None:
+            write_flatgeobuf(handler.records, args.out_fgb, simplify_m=args.simplify_m)
 
 
 if __name__ == "__main__":
