@@ -36,6 +36,11 @@ const DEFAULT_BASEMAP = 'positron';
 export function createAppState() {
   let state = {
     pinnedSegments: [],
+    // Monotonic counter bumped automatically whenever pinnedSegments changes.
+    // Subscribers can compare this scalar instead of stringifying the array
+    // each tick — relevant on the heightgraph hover path which fires the
+    // subscribe callback at 60 fps via setHoverSampleIndex.
+    pinnedSegmentsVersion: 0,
     focusedPinnedIndex: -1,
     // The "active" view binding. When pinnedSegments is empty, this carries
     // the hover preview. When non-empty, it's the focused pinned segment.
@@ -59,10 +64,25 @@ export function createAppState() {
 
   const subscribers = new Set();
   const notify = () => {
-    subscribers.forEach((subscriber) => subscriber(state));
+    // Isolate subscribers from each other: a throw in one must not prevent
+    // the rest from running. Without this, a single rendering bug in the
+    // profile panel would silently freeze the map's filter/hover sync.
+    subscribers.forEach((subscriber) => {
+      try {
+        subscriber(state);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[appState] subscriber threw:', err);
+      }
+    });
   };
 
   const update = (partial) => {
+    // Auto-bump the pinnedSegmentsVersion whenever the pinnedSegments
+    // reference changes. Callers don't need to remember to do this.
+    if ('pinnedSegments' in partial && partial.pinnedSegments !== state.pinnedSegments) {
+      partial.pinnedSegmentsVersion = state.pinnedSegmentsVersion + 1;
+    }
     state = { ...state, ...partial };
     notify();
   };

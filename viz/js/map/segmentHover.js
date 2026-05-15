@@ -55,6 +55,24 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
   let rafScheduled = false;
   let pendingPoint = null;
 
+  // Cancellation handle for the currently-awaiting profile request. When the
+  // user hovers past one way faster than Mapterhorn responds, we abort the
+  // previous request so its computeStats + state dispatch don't run on stale
+  // data. The underlying tile fetches keep running and populate the LRU cache,
+  // so the next hover that needs the same tiles still benefits.
+  let activeProfileController = null;
+
+  function startProfileRequest(args = {}) {
+    if (activeProfileController) activeProfileController.abort();
+    activeProfileController = new AbortController();
+    return requestProfileForCurrentState({
+      appState,
+      mapterhornClient,
+      signal: activeProfileController.signal,
+      ...args,
+    });
+  }
+
   function processHoverAt(point) {
     const features = map.queryRenderedFeatures(pickBoxAt(point), {
       layers: GRADIENTS_MAIN_LAYER_IDS,
@@ -99,7 +117,7 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
     if (pendingTimer !== null) clearTimeout(pendingTimer);
     pendingTimer = setTimeout(() => {
       pendingTimer = null;
-      requestProfileForCurrentState({ appState, mapterhornClient, hovered });
+      startProfileRequest({ hovered });
     }, HOVER_DEBOUNCE_MS);
   }
 
@@ -191,7 +209,7 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
       clearTimeout(pendingTimer);
       pendingTimer = null;
     }
-    requestProfileForCurrentState({ appState, mapterhornClient });
+    startProfileRequest();
   });
 
   // ── Keyboard: ESC unpins ────────────────────────────────────────────────
@@ -202,7 +220,7 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
   });
 
   // ── Layer filter & marker sync (single writer) ──────────────────────────
-  let appliedPinSignature = '';
+  let appliedPinVersion = -1;
   let appliedHoverKey = null;
   let appliedSampleKey = null;
   let appliedArrowOsmId = null;
@@ -214,14 +232,13 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
     let lineFiltersDirty = false;
 
     // Pin highlight: every pinned osm_id should light up in its region's
-    // pin layer. We compute a per-region list of osm_ids and feed each
-    // region's layer an `in` filter.
-    const pinSignature = state.pinned
-      ? state.pinnedSegments.map((s) => `${s.regionId}:${s.osmId}`).join('|')
-      : '';
-    if (pinSignature !== appliedPinSignature) {
+    // pin layer. We watch the monotonic pinnedSegmentsVersion (bumped by
+    // appState on every mutation) instead of stringifying the array — the
+    // heightgraph cursor fires this subscriber at 60 fps and the version
+    // compare is a scalar instead of N string allocations + a join.
+    if (state.pinnedSegmentsVersion !== appliedPinVersion) {
       applyMultiRegionPinFilter(map, GRADIENTS_PIN_LAYER_IDS, state.pinnedSegments);
-      appliedPinSignature = pinSignature;
+      appliedPinVersion = state.pinnedSegmentsVersion;
       lineFiltersDirty = true;
     }
 
@@ -282,21 +299,21 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
 // Profile request — route-aware
 // ─────────────────────────────────────────────────────────────────────────
 
-async function requestProfileForCurrentState({ appState, mapterhornClient, hovered }) {
+async function requestProfileForCurrentState({ appState, mapterhornClient, hovered, signal }) {
   const state = appState.getState();
 
   if (state.pinned && state.pinnedSegments.length > 0) {
-    return requestRouteProfile({ appState, mapterhornClient, segments: state.pinnedSegments });
+    return requestRouteProfile({ appState, mapterhornClient, segments: state.pinnedSegments, signal });
   }
   if (hovered) {
-    return requestSingleProfile({ appState, mapterhornClient, feature: hovered });
+    return requestSingleProfile({ appState, mapterhornClient, feature: hovered, signal });
   }
 }
 
 // Sample the entire ordered route as one polyline. The heightgraph then
 // shows a single continuous profile across all clicked segments, with
 // segment boundaries marked on the X-axis.
-async function requestRouteProfile({ appState, mapterhornClient, segments }) {
+async function requestRouteProfile({ appState, mapterhornClient, segments, signal }) {
   const route = buildRouteFromSegments(segments);
   if (route.coordinates.length < 2) {
     appState.setProfileError(routeKey(segments), 'Keine Liniengeometrie zum Auswerten.');
@@ -313,7 +330,8 @@ async function requestRouteProfile({ appState, mapterhornClient, segments }) {
   appState.setProfileLoading(id);
 
   try {
-    const result = await mapterhornClient.sampleProfile(samples);
+    const result = await mapterhornClient.sampleProfile(samples, { signal });
+    if (signal?.aborted) return;
     const stats = computeStats(samples, result.elevations, totalDistanceMeters);
     appState.setProfileData(id, {
       samples,
@@ -327,12 +345,13 @@ async function requestRouteProfile({ appState, mapterhornClient, segments }) {
       },
     });
   } catch (error) {
+    if (error?.name === 'AbortError') return;
     appState.setProfileError(id, error?.message || 'Höhenprofil konnte nicht geladen werden.');
   }
 }
 
 // Original single-segment path (used for hover preview when nothing is pinned).
-async function requestSingleProfile({ appState, mapterhornClient, feature }) {
+async function requestSingleProfile({ appState, mapterhornClient, feature, signal }) {
   const coordinates = feature.coordinates && feature.coordinates.length > 0
     ? feature.coordinates
     : [];
@@ -346,7 +365,8 @@ async function requestSingleProfile({ appState, mapterhornClient, feature }) {
   appState.setProfileLoading(feature.osmId);
 
   try {
-    const result = await mapterhornClient.sampleProfile(samples);
+    const result = await mapterhornClient.sampleProfile(samples, { signal });
+    if (signal?.aborted) return;
     const stats = computeStats(samples, result.elevations, totalDistanceMeters);
     appState.setProfileData(feature.osmId, {
       samples,
@@ -355,6 +375,7 @@ async function requestSingleProfile({ appState, mapterhornClient, feature }) {
       properties: feature.properties,
     });
   } catch (error) {
+    if (error?.name === 'AbortError') return;
     appState.setProfileError(feature.osmId, error?.message || 'Höhenprofil konnte nicht geladen werden.');
   }
 }

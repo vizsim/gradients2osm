@@ -8,20 +8,42 @@ import { createLruPromiseCache } from '../utils/lruPromiseCache.js';
 // 4× the tile fetches per route — still cheap thanks to the LRU cache.
 const TILE_ZOOM = 13;
 const TILE_ENDPOINT = 'https://tiles.mapterhorn.com';
-const TILE_CACHE_LIMIT = 64;
+// A single route can need ~10-15 z13 terrain tiles; 64 caused thrashing once
+// the user hovered across 4-5 unrelated routes in quick succession (eviction
+// storm → every revisit re-fetched and re-decoded). 256 keeps roughly the
+// last ~20 distinct routes warm. Each cached entry is one ImageData (~1 MB
+// at 512×512 RGBA), so worst-case ~256 MB. Browsers handle that comfortably.
+const TILE_CACHE_LIMIT = 256;
 
 export function createMapterhornClient() {
   const tileCache = createLruPromiseCache(TILE_CACHE_LIMIT);
 
   return {
-    async sampleProfile(samples) {
-      const elevations = await Promise.all(
+    // Optional `signal` lets callers cancel the wait when the user hovers
+    // on. We don't propagate the signal into the inner tile fetches because
+    // those are shared via the LRU cache — letting them finish keeps the
+    // cache warm for adjacent routes (the typical next hover).
+    async sampleProfile(samples, { signal } = {}) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
+      const elevationsPromise = Promise.all(
         samples.map((sample) => sampleElevationAtPoint(sample.lng, sample.lat))
       );
 
-      return {
-        elevations,
-      };
+      if (!signal) {
+        const elevations = await elevationsPromise;
+        return { elevations };
+      }
+
+      const elevations = await new Promise((resolve, reject) => {
+        const onAbort = () => reject(new DOMException('Aborted', 'AbortError'));
+        signal.addEventListener('abort', onAbort, { once: true });
+        elevationsPromise.then(
+          (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+          (err)   => { signal.removeEventListener('abort', onAbort); reject(err); },
+        );
+      });
+      return { elevations };
     },
   };
 
