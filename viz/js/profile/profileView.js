@@ -94,21 +94,34 @@ export function setupProfileView(appState) {
 
   let lastState = appState.getState();
   let resizeFrame = null;
+  let lastCanvasWidth = 0;
 
   appState.subscribe((state) => {
     lastState = state;
     renderUi(dom, rendered, state);
   });
 
-  window.addEventListener('resize', () => {
+  // ResizeObserver catches every change to the canvas's laid-out width:
+  // - the first layout pass after `hidden=false` un-hides the shell (the
+  //   case where clientWidth was 0 / a fallback on the very first paint
+  //   and the chart bitmap got stretched until the user moved the mouse)
+  // - panel collapse/expand, scrollbar appearing or disappearing
+  // - window resize
+  // Cheaper and more correct than the previous window.resize listener.
+  const observer = new ResizeObserver((entries) => {
+    const entry = entries[0];
+    if (!entry) return;
+    const width = entry.contentBoxSize?.[0]?.inlineSize ?? entry.contentRect.width;
+    if (width <= 0 || width === lastCanvasWidth) return;
+    lastCanvasWidth = width;
     if (resizeFrame) cancelAnimationFrame(resizeFrame);
     resizeFrame = requestAnimationFrame(() => {
-      // Force-re-render to recompute heightgraph for the new canvas width.
+      resizeFrame = null;
       rendered.profileSegmentId = '__force__';
       renderUi(dom, rendered, lastState);
-      resizeFrame = null;
     });
   });
+  observer.observe(dom.canvas);
 
   setupCanvasHoverThrottle(dom.canvas, appState);
 }
