@@ -104,6 +104,15 @@ button {
   font-weight: 600;
 }
 
+.panel-subtitle {
+  margin: 4px 0 0 0;
+  font-size: 0.78rem;
+  font-style: italic;
+  color: var(--text-secondary);
+  line-height: 1.35;
+  max-width: 32ch;
+}
+
 .routing-header-actions {
   display: inline-flex;
   align-items: center;
