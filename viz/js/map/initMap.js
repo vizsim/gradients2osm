@@ -153,6 +153,13 @@ export async function initMap(container) {
     maxPitch: 75,
     hash: true,
     attributionControl: { compact: true },
+    // Default tile cache scales with viewport (~150 tiles on a 1080p canvas).
+    // We have three gradient sources active simultaneously, plus basemap +
+    // optionally DEM/buildings, so the default fills up fast and tiles get
+    // evicted when the user pans/zooms back to where they just were. 512
+    // gives plenty of headroom (~200 MB peak with vector tiles) so revisits
+    // don't trigger a re-fetch.
+    maxTileCacheSize: 512,
   });
 
   map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), 'top-left');

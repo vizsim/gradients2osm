@@ -19,14 +19,44 @@ import {
 
 const HOVER_DEBOUNCE_MS = 60;
 
+// Half-side of the bbox we query for pointer events. Single-pixel point queries
+// drop returns when terrain is enabled (MapLibre issue #6563: drape-rendered
+// lines drift slightly from where queryRenderedFeatures looks), and a thin
+// line at z<13 is only 1-2 px wide so even flat picking is finicky. An 8×8 px
+// pick area makes hover/click robust under both modes.
+const PICK_RADIUS_PX = 4;
+
+function pickBoxAt(point) {
+  return [
+    [point.x - PICK_RADIUS_PX, point.y - PICK_RADIUS_PX],
+    [point.x + PICK_RADIUS_PX, point.y + PICK_RADIUS_PX],
+  ];
+}
+
 export function setupSegmentHover({ map, appState, mapterhornClient }) {
   const canvas = map.getCanvas();
   let pendingTimer = null;
   let lastHoverFeatureKey = null;
 
-  // ── Hover (preview when nothing pinned) ─────────────────────────────────
-  map.on('mousemove', (event) => {
-    const features = map.queryRenderedFeatures(event.point, {
+  // Hover is suspended while the map is moving (pan/zoom). queryRenderedFeatures
+  // is expensive with terrain enabled, and burning it for every mousemove
+  // during a pan piles up filter updates + profile requests for features the
+  // user is just panning past anyway. We track the latest pointer position
+  // even while suspended so we can re-evaluate hover once at the move end.
+  let isMapMoving = false;
+  let lastMousePoint = null;
+
+  // requestAnimationFrame-coalesce the mousemove handler: a fast mouse fires
+  // 60-120 events/s, each triggering a queryRenderedFeatures (terrain pick is
+  // expensive). Coalescing to one work item per frame caps the cost at the
+  // browser's actual paint rate, so under CPU pressure (heavy tile decode,
+  // terrain drape) hover automatically slows down with the rest instead of
+  // piling up a backlog of stale events.
+  let rafScheduled = false;
+  let pendingPoint = null;
+
+  function processHoverAt(point) {
+    const features = map.queryRenderedFeatures(pickBoxAt(point), {
       layers: GRADIENTS_MAIN_LAYER_IDS,
     });
 
@@ -71,11 +101,49 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
       pendingTimer = null;
       requestProfileForCurrentState({ appState, mapterhornClient, hovered });
     }, HOVER_DEBOUNCE_MS);
+  }
+
+  function scheduleHoverFlush() {
+    if (rafScheduled) return;
+    rafScheduled = true;
+    requestAnimationFrame(() => {
+      rafScheduled = false;
+      if (isMapMoving || pendingPoint === null) return;
+      const point = pendingPoint;
+      pendingPoint = null;
+      processHoverAt(point);
+    });
+  }
+
+  // ── Hover (preview when nothing pinned) ─────────────────────────────────
+  map.on('mousemove', (event) => {
+    lastMousePoint = event.point;
+    if (isMapMoving) return;
+    // Always overwrite pendingPoint so the rAF picks up the latest position;
+    // older events on the queue are silently dropped — which is what we want.
+    pendingPoint = event.point;
+    scheduleHoverFlush();
+  });
+
+  // ── Suspend hover while the map is panning/zooming ─────────────────────
+  map.on('movestart', () => {
+    isMapMoving = true;
+  });
+
+  map.on('moveend', () => {
+    isMapMoving = false;
+    // Catch up once with the latest known pointer position so the user sees
+    // an updated hover as soon as the map settles. If the mouse never entered
+    // the canvas (lastMousePoint still null) there's nothing to do.
+    if (lastMousePoint !== null) {
+      pendingPoint = lastMousePoint;
+      scheduleHoverFlush();
+    }
   });
 
   // ── Click: plain = replace, Ctrl/Cmd = toggle in route ──────────────────
   map.on('click', (event) => {
-    const features = map.queryRenderedFeatures(event.point, {
+    const features = map.queryRenderedFeatures(pickBoxAt(event.point), {
       layers: GRADIENTS_MAIN_LAYER_IDS,
     });
 
@@ -140,6 +208,11 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
   let appliedArrowOsmId = null;
 
   appState.subscribe((state) => {
+    // We track whether any line-layer filter actually changed this tick so
+    // we can force a single repaint at the end (see comment near the bottom
+    // of this callback for why that matters with terrain).
+    let lineFiltersDirty = false;
+
     // Pin highlight: every pinned osm_id should light up in its region's
     // pin layer. We compute a per-region list of osm_ids and feed each
     // region's layer an `in` filter.
@@ -149,6 +222,7 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
     if (pinSignature !== appliedPinSignature) {
       applyMultiRegionPinFilter(map, GRADIENTS_PIN_LAYER_IDS, state.pinnedSegments);
       appliedPinSignature = pinSignature;
+      lineFiltersDirty = true;
     }
 
     // Hover highlight: shows the active feature when unpinned, or the
@@ -167,6 +241,7 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
     if (hoverKey !== appliedHoverKey) {
       applyRegionScopedFilter(map, GRADIENTS_HOVER_LAYER_IDS, hoverRegion, hoverOsmId);
       appliedHoverKey = hoverKey;
+      lineFiltersDirty = true;
     }
 
     // Sample marker mirroring the heightgraph cursor onto the map.
@@ -187,6 +262,18 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
     if (arrowOsmId !== appliedArrowOsmId) {
       setActiveOsmIdForArrows(map, arrowOsmId);
       appliedArrowOsmId = arrowOsmId;
+    }
+
+    // With terrain enabled, MapLibre renders line layers into per-terrain-tile
+    // "drape" framebuffers and reuses them as textures on the 3D mesh. A bare
+    // setFilter on a draped line layer doesn't always invalidate that cache
+    // immediately — the hover/pin lines then render with the *previous*
+    // filter for one frame. Symbol layers (the arrows) billboard instead of
+    // draping, so they're not affected. triggerRepaint forces the drape pass
+    // to redraw with the new filter. Cheap (one render cycle), no-op without
+    // terrain.
+    if (lineFiltersDirty) {
+      map.triggerRepaint();
     }
   });
 }
