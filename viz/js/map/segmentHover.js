@@ -303,26 +303,26 @@ function applyMultiRegionPinFilter(map, layerIds, pinnedSegments) {
     const region = regionIdForLayer(layerId);
     const ids = byRegion.get(region) || [];
     if (ids.length === 0) {
-      map.setFilter(layerId, ['==', ['get', 'osm_id'], -1]);
+      map.setFilter(layerId, ['==', ['to-number', ['get', 'osm_id']], -1]);
     } else if (ids.length === 1) {
-      map.setFilter(layerId, ['==', ['get', 'osm_id'], ids[0]]);
+      map.setFilter(layerId, ['==', ['to-number', ['get', 'osm_id']], ids[0]]);
     } else {
-      map.setFilter(layerId, ['in', ['get', 'osm_id'], ['literal', ids]]);
+      map.setFilter(layerId, ['in', ['to-number', ['get', 'osm_id']], ['literal', ids]]);
     }
   }
 }
 
 function applyRegionScopedFilter(map, layerIds, targetRegionId, osmId) {
   if (osmId === null || osmId === undefined) {
-    const noMatch = ['==', ['get', 'osm_id'], -1];
+    const noMatch = ['==', ['to-number', ['get', 'osm_id']], -1];
     for (const layerId of layerIds) {
       if (map.getLayer(layerId)) map.setFilter(layerId, noMatch);
     }
     return;
   }
 
-  const match = ['==', ['get', 'osm_id'], osmId];
-  const noMatch = ['==', ['get', 'osm_id'], -1];
+  const match = ['==', ['to-number', ['get', 'osm_id']], osmId];
+  const noMatch = ['==', ['to-number', ['get', 'osm_id']], -1];
   for (const layerId of layerIds) {
     if (!map.getLayer(layerId)) continue;
     const inTargetRegion = targetRegionId === null

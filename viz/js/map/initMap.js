@@ -122,16 +122,17 @@ const CUSTOM_LAYER_IDS = new Set([
 
 const EMPTY_FEATURE_COLLECTION = { type: 'FeatureCollection', features: [] };
 
-// Diverging color ramp: cool greens for flat, warm oranges/reds for steep.
-// Sign is treated as direction-agnostic in the paint via abs(). Stops are
-// in percent.
+// Color ramp: neutral grey for flat, warm yellow→orange→red for steeper,
+// purple at the extreme end. Stops align with the categorical bins in the
+// top legend (flach / 2-4 / 4-6 / 6-10 / >10) so the smooth map ramp and
+// the categorical histogram tell the same story. Sign is treated as
+// direction-agnostic in the paint via abs(). Stops are in percent.
 const GRADIENT_COLOR_STOPS = [
-  [0, '#1a9850'],
-  [2, '#66bd63'],
-  [4, '#fee08b'],
-  [6, '#fdae61'],
-  [8, '#f46d43'],
-  [12, '#d73027'],
+  [0,  '#93a39a'],
+  [2,  '#fee08b'],
+  [4,  '#fdae61'],
+  [6,  '#f46d43'],
+  [10, '#d73027'],
   [20, '#7a0177'],
 ];
 
@@ -387,7 +388,12 @@ function addGradientLayers(map, regionUrls) {
         type: 'line',
         source: sourceIdFor(region.id),
         'source-layer': SOURCE_LAYER,
-        filter: ['==', ['get', 'osm_id'], -1],
+        // `osm_id` is stored as a string in the MLT tiles (tippecanoe was
+        // built with `-T osm_id:string` because real OSM IDs overflow int32).
+        // MapLibre's `==` is type-strict, so all hover/pin/arrow filters in
+        // this file and in segmentHover.js coerce the tile value back to a
+        // number to match against the numeric IDs the JS side passes in.
+        filter: ['==', ['to-number', ['get', 'osm_id']], -1],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': '#1d4ed8',
@@ -414,7 +420,7 @@ function addGradientLayers(map, regionUrls) {
         type: 'line',
         source: sourceIdFor(region.id),
         'source-layer': SOURCE_LAYER,
-        filter: ['==', ['get', 'osm_id'], -1],
+        filter: ['==', ['to-number', ['get', 'osm_id']], -1],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': '#1d4ed8',
@@ -440,7 +446,7 @@ function addGradientLayers(map, regionUrls) {
       type: 'symbol',
       source: sourceIdFor(region.id),
       'source-layer': SOURCE_LAYER,
-      filter: ['==', ['get', 'osm_id'], -1],
+      filter: ['==', ['to-number', ['get', 'osm_id']], -1],
       layout: {
         'symbol-placement': 'line',
         'symbol-spacing': 110,
@@ -614,7 +620,7 @@ export function setMapBuildings(map, enabled) {
 export function setActiveOsmIdForArrows(map, osmId) {
   if (!map) return;
   const filterValue = osmId ?? -1;
-  const filter = ['==', ['get', 'osm_id'], filterValue];
+  const filter = ['==', ['to-number', ['get', 'osm_id']], filterValue];
   for (const layerId of REGION_LAYER_IDS.arrow) {
     if (map.getLayer(layerId)) {
       map.setFilter(layerId, filter);

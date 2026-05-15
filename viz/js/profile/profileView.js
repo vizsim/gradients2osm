@@ -650,11 +650,10 @@ function labelHighway(value) {
 }
 
 function colorForGradient(pct) {
-  if (pct < 2) return '#1a9850';
-  if (pct < 4) return '#66bd63';
-  if (pct < 6) return '#fee08b';
-  if (pct < 8) return '#fdae61';
-  if (pct < 12) return '#f46d43';
+  if (pct < 2)  return '#93a39a';
+  if (pct < 4)  return '#fee08b';
+  if (pct < 6)  return '#fdae61';
+  if (pct < 10) return '#f46d43';
   if (pct < 20) return '#d73027';
   return '#7a0177';
 }

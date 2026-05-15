@@ -790,14 +790,16 @@ button {
   transform: translateY(-50%);
   height: 8px;
   border-radius: 999px;
+  /* Stops match GRADIENT_COLOR_STOPS in initMap.js, mapped against the
+     slider's 0-20% range. Stays in lock-step with the map ramp so the
+     slider preview equals what the map paints. */
   background: linear-gradient(
     90deg,
-    #1a9850 0%,
-    #66bd63 14%,
-    #fee08b 28%,
-    #fdae61 42%,
-    #f46d43 58%,
-    #d73027 75%,
+    #93a39a 0%,
+    #fee08b 10%,
+    #fdae61 20%,
+    #f46d43 30%,
+    #d73027 50%,
     #7a0177 100%
   );
   pointer-events: none;
