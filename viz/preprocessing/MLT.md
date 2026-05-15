@@ -96,16 +96,36 @@ Damit: **478 → 478 Tiles, kein Daten-Drop.**
 > Konkret saubere Lösung: Encoder selbst bauen und den 1-Zeiler patchen
 > — bis dahin ist die aktuelle Pipeline produktiv funktionsfähig.
 
-## Vergleich MVT vs MLT (saarland_v02)
+## Vergleich MVT vs MLT
 
-| Metrik                  | MVT (tippecanoe) | MLT (encode.jar) |
-|-------------------------|-----------------:|-----------------:|
-| Dateigröße PMTiles      |          9.9 MB  |        6.6 MB    |
-| Verhältnis              |             1.00 |       **0.69**   |
-| Tile-Count              |             478  |             478  |
-| `tile compression`      |             gzip |            gzip  |
+Drei Regionen, jeweils mit identischer tippecanoe-Konfiguration
+(`--single-precision` + `-T :float`) und MLT-Encode mit `--compress gzip
+--enable-fsst --parallel`.
 
-Stichprobe einzelner Tiles (Bytes):
+### Dateigröße PMTiles
+
+| Region                  | MVT      | MLT      | MLT/MVT  | Tiles MVT → MLT |
+|-------------------------|---------:|---------:|---------:|----------------:|
+| saarland_v02            |   9.9 MB |   6.6 MB | **0.69** |     478 → 478   |
+| brandenburg_v02         |  47.4 MB |  31.9 MB | **0.67** |   5 231 → 5 231 |
+| baden-württemberg_v02   | 119.2 MB |  80.5 MB | **0.68** |   5 036 → 5 036 |
+
+Alle drei Regionen landen sehr konsistent bei einer **~32 % Reduktion**.
+Kein Tile-Verlust (Anzahl identisch).
+
+### Build-Zeiten (Brandenburg + Baden-Württemberg, WSL2 Linux)
+
+| Region                  | tippecanoe (MVT) | mlt-encode | total |
+|-------------------------|-----------------:|-----------:|------:|
+| brandenburg_v02         |              31s |        41s |   72s |
+| baden-württemberg_v02   |              60s |        52s |  112s |
+
+MLT-Encoder ist nicht der Flaschenhals — bewegt sich auf Augenhöhe
+mit tippecanoe oder leicht darunter.
+
+### Stichprobe einzelner Tiles (Bytes)
+
+Saarland (`saarland_v02`):
 
 | z/x/y         |     MVT |     MLT | MLT/MVT |
 |---------------|--------:|--------:|--------:|
@@ -113,20 +133,38 @@ Stichprobe einzelner Tiles (Bytes):
 | 12/2126/1402  |  71 100 |  49 468 |    0.70 |
 | 13/4253/2806  |   2 160 |   1 835 |    0.85 |
 
+Brandenburg (`brandenburg_v02`):
+
+| z/x/y         |     MVT |     MLT | MLT/MVT |
+|---------------|--------:|--------:|--------:|
+| 11/1101/672   | 242 123 | 145 589 |    0.60 |
+| 12/2202/1344  | 109 385 |  67 908 |    0.62 |
+| 13/4404/2688  |  26 327 |  17 012 |    0.65 |
+
+Baden-Württemberg (`baden-wuerttemberg_v02`):
+
+| z/x/y         |     MVT |     MLT | MLT/MVT |
+|---------------|--------:|--------:|--------:|
+| 11/1078/710   |  74 942 |  50 651 |    0.68 |
+| 12/2156/1420  |  21 124 |  14 816 |    0.70 |
+| 13/4312/2840  |   7 319 |   5 635 |    0.77 |
+
 Tiles auf z6–z10 sind in unserer Pipeline leer/27 Byte, weil das
 Zoom-Highway-Filter erst ab z11 dichte Geometrien zulässt.
 
 **Beobachtungen:**
 
-- Spürbare Einsparung auf den dichten Mid-Zoom-Tiles (z11/z12: −30…−35 %).
-- Auf sehr kleinen Tiles (z13) flacht der Gewinn ab (−15 %), weil der
-  pro-Tile MLT-Header-Overhead anteilig wächst.
+- Spürbare Einsparung auf den dichten Mid-Zoom-Tiles (z11/z12: −30…−40 %).
+- Brandenburg komprimiert anteilig am besten (−35 % gesamt, einzelne
+  Tiles bis −40 %) — vermutlich weil das dichte Land-Straßennetz viele
+  Features mit sehr ähnlichen Attribut-Strings hat, was FSST und das
+  columnar Integer-Packing maximal nutzen können.
+- Auf sehr kleinen Tiles (z13 mit wenigen Features) flacht der Gewinn
+  ab (−15…−25 %), weil der pro-Tile MLT-Header-Overhead anteilig wächst.
 - Die in der Spec versprochenen „bis zu 6×" sieht man bei reinen
   Linien-Layern mit moderaten Attributen nicht — der MLT-Vorteil kommt
   vor allem aus FSST-String-Encoding und columnar Integer-Packing,
   was bei unseren OSM-Tags + numerischen Gradienten begrenzt greift.
-- Encoder-Geschwindigkeit auf Saarland: wenige Sekunden mit
-  `--parallel` — unkritisch ggü. dem tippecanoe-Build.
 
 ## Browser-Support
 
@@ -139,11 +177,9 @@ Zoom-Highway-Filter erst ab z11 dichte Geometrien zulässt.
 ## Offene Punkte / nächste Schritte
 
 - [ ] Encoder aus `maplibre-tile-spec/java` selbst bauen mit Patch
-  in `PropertyEncoder.getDoublePropertyValue`, um die ~449 internen
-  Casts loszuwerden. Dann kann `--continue` raus aus dem Skript.
-- [ ] Vergleich auf einer größeren Region (Brandenburg ~46 MB,
-  Baden-Württemberg ~115 MB) — interessant, ob das Verhältnis stabil
-  bei ~0.69 bleibt oder bei mehr Properties besser wird.
+  in `PropertyEncoder.getDoublePropertyValue`, um die internen
+  `ClassCastException Float → Double` loszuwerden. Dann kann
+  `--continue` raus aus dem Skript.
 - [ ] Cold-Start / Frame-Time im Viewer messen (MLT verspricht
   schnelleres Decoding) — bisher nur Größe verglichen.
 - [ ] Sobald ein Java-Release > `v0.0.10` rauskommt, neue Jar ziehen

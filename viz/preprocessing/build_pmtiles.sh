@@ -44,6 +44,13 @@ echo ">> tippecanoe -> $PMTILES"
 #            wird im Viewer überzoomt; ersetzt das frühere max=14 +
 #            base=13 für deutlich kompaktere Tiles bei minimal weniger
 #            Detail in der höchsten Zoomstufe).
+#
+# MLT-Tauglichkeit (siehe MLT.md):
+#   --single-precision + -T <numeric-col>:float  -> einheitliche
+#     Float-Repräsentation in den Tiles, damit der mlt-encode.jar nicht
+#     an gemischten INT_32/FLOAT/DOUBLE-Werten scheitert.
+#   -T osm_id:string, -T n_samples:int, -T is_implausible_grad:bool
+#     -> verhindert das "Mixed"-Field-Type-Problem in vector_layers.
 tippecanoe \
   -o "$PMTILES" \
   --force \
@@ -54,7 +61,18 @@ tippecanoe \
   --no-tile-size-limit \
   --no-feature-limit \
   --read-parallel \
+  --single-precision \
   -x tags_json \
+  -T length_m:float \
+  -T elevation_gain_m:float -T elevation_loss_m:float \
+  -T gradient_abs_avg_pct:float -T gradient_endpoint_pct:float -T gradient_smooth_pct:float \
+  -T slope_1_bwd_pct:float -T slope_1_fwd_pct:float \
+  -T slope_2_bwd_pct:float -T slope_2_fwd_pct:float \
+  -T slope_3_bwd_pct:float -T slope_3_fwd_pct:float \
+  -T slope_4_bwd_pct:float -T slope_4_fwd_pct:float \
+  -T osm_id:string \
+  -T n_samples:int \
+  -T is_implausible_grad:bool \
   -j '{"ways":["all",["!in","highway","service","footway","path","steps","bridleway","corridor","construction","proposed"],["any",[">=","$zoom",13],["all",[">=","$zoom",11],["in","highway","motorway","trunk","primary","secondary","tertiary","residential","unclassified","living_street","pedestrian","cycleway"]],["all",[">=","$zoom",8],["in","highway","motorway","trunk","primary","secondary","tertiary"]],["in","highway","motorway","trunk","primary"]]]}' \
   "$INPUT"
 
