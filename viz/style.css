@@ -486,41 +486,30 @@ button {
   border-radius: 6px;
 }
 
+/* Neutral 4-column grid shared by the Live (Referenz) and PMTiles (Kandidaten)
+   summary blocks. Identical layout in both sections makes the values
+   line-up directly comparable. .metric-grid is the container, .metric-cell
+   is a single labeled value (prefix on top, big value below). */
+.metric-grid,
 .profile-summary {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
 }
 
-.summary-card {
+.metric-cell {
   background: rgba(255, 255, 255, 0.75);
   border: 1px solid var(--border-primary);
-  border-radius: 10px;
-  padding: 8px 10px;
-}
-
-.summary-card-wide { grid-column: 1 / -1; }
-
-.summary-stat {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.summary-stat strong { font-size: 1.05rem; }
-
-.summary-inline-list {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.summary-inline-metric {
+  border-radius: 8px;
+  padding: 6px 8px;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
   gap: 2px;
+}
+
+.metric-cell strong {
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .summary-metric-prefix {
@@ -530,7 +519,22 @@ button {
   color: var(--text-muted);
 }
 
-.summary-inline-metric strong { font-size: 1rem; }
+/* Hint shown below the Live cells when the stitched DEM-path length differs
+   noticeably from the PMTiles `length_m` attribute — typically because the
+   way is split across tile boundaries and MapLibre's queryRenderedFeatures
+   returns fragments that don't fully reconstruct the original geometry. */
+.live-length-warning {
+  margin: 6px 0 0 0;
+  padding: 6px 10px;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  font-style: italic;
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 2px solid rgba(245, 158, 11, 0.5);
+  border-radius: 4px;
+}
+.live-length-warning[hidden] { display: none; }
 
 /* ------------------------- Store blocks ---------------------------------- */
 
@@ -562,6 +566,17 @@ button {
   letter-spacing: 0.06em;
   color: var(--text-muted);
   font-weight: 600;
+}
+
+/* Inline annotation on a store-block-title, e.g. "aus 'Geglättet'" — same line
+   as the title, dropped weight and case to read as a parenthetical. */
+.store-block-suffix {
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--text-secondary);
 }
 
 .metric-list {
@@ -625,26 +640,8 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
-.store-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.store-cell {
-  background: rgba(255, 255, 255, 0.75);
-  border: 1px solid var(--border-primary);
-  border-radius: 8px;
-  padding: 6px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.store-cell strong {
-  font-size: 0.95rem;
-  font-variant-numeric: tabular-nums;
-}
+/* (.store-grid / .store-cell merged into .metric-grid / .metric-cell above —
+   identical layout, now shared by both the Live and PMTiles sections.) */
 
 /* ------------------------- Slope distribution ---------------------------- */
 

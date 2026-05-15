@@ -81,37 +81,24 @@
           <canvas id="heightgraph-canvas"></canvas>
         </div>
         <div id="profile-summary" class="profile-summary" hidden>
-          <div class="summary-card summary-card-wide">
-            <div class="summary-stat">
-              <span class="summary-metric-prefix">Länge (DEM)</span>
-              <strong id="distance-summary">-</strong>
-            </div>
+          <div class="metric-cell">
+            <span class="summary-metric-prefix">↑ Auf</span>
+            <strong id="ascent-summary">-</strong>
           </div>
-          <div class="summary-card">
-            <div class="summary-inline-list">
-              <div class="summary-inline-metric">
-                <span class="summary-metric-prefix">↑ Auf</span>
-                <strong id="ascent-summary">-</strong>
-              </div>
-              <div class="summary-inline-metric">
-                <span class="summary-metric-prefix">↓ Ab</span>
-                <strong id="descent-summary">-</strong>
-              </div>
-            </div>
+          <div class="metric-cell">
+            <span class="summary-metric-prefix">↓ Ab</span>
+            <strong id="descent-summary">-</strong>
           </div>
-          <div class="summary-card">
-            <div class="summary-inline-list">
-              <div class="summary-inline-metric">
-                <span class="summary-metric-prefix">Min</span>
-                <strong id="min-summary">-</strong>
-              </div>
-              <div class="summary-inline-metric">
-                <span class="summary-metric-prefix">Max</span>
-                <strong id="max-summary">-</strong>
-              </div>
-            </div>
+          <div class="metric-cell">
+            <span class="summary-metric-prefix">Länge (DEM)</span>
+            <strong id="distance-summary">-</strong>
+          </div>
+          <div class="metric-cell">
+            <span class="summary-metric-prefix">Samples</span>
+            <strong id="live-samples">-</strong>
           </div>
         </div>
+        <p id="live-length-warning" class="live-length-warning" hidden></p>
       </section>
 
       <!-- Store-Sektion: alles vorberechnet, aus dem PMTiles -->
@@ -134,21 +121,21 @@
         </div>
 
         <div class="store-block">
-          <p class="store-block-title">Höhe entlang des Wegs</p>
-          <div class="store-grid">
-            <div class="store-cell">
-              <span class="summary-metric-prefix">↑ Gain</span>
+          <p class="store-block-title">Höhe entlang des Wegs <span class="store-block-suffix">aus „Geglättet"</span></p>
+          <div class="metric-grid">
+            <div class="metric-cell">
+              <span class="summary-metric-prefix">↑ Auf</span>
               <strong id="store-gain">-</strong>
             </div>
-            <div class="store-cell">
-              <span class="summary-metric-prefix">↓ Loss</span>
+            <div class="metric-cell">
+              <span class="summary-metric-prefix">↓ Ab</span>
               <strong id="store-loss">-</strong>
             </div>
-            <div class="store-cell">
+            <div class="metric-cell">
               <span class="summary-metric-prefix">Länge</span>
               <strong id="store-length">-</strong>
             </div>
-            <div class="store-cell">
+            <div class="metric-cell">
               <span class="summary-metric-prefix">Samples</span>
               <strong id="store-samples">-</strong>
             </div>

@@ -145,8 +145,8 @@ function cacheDom() {
     distanceSummary: document.getElementById('distance-summary'),
     ascentSummary: document.getElementById('ascent-summary'),
     descentSummary: document.getElementById('descent-summary'),
-    minSummary: document.getElementById('min-summary'),
-    maxSummary: document.getElementById('max-summary'),
+    liveSamples: document.getElementById('live-samples'),
+    liveLengthWarning: document.getElementById('live-length-warning'),
     storeGain: document.getElementById('store-gain'),
     storeLoss: document.getElementById('store-loss'),
     storeLength: document.getElementById('store-length'),
@@ -436,8 +436,8 @@ function renderLiveSection(dom, rendered, state) {
       dom.distanceSummary.textContent = formatDistance(stats.distanceMeters);
       dom.ascentSummary.textContent = formatHeight(stats.ascentMeters);
       dom.descentSummary.textContent = formatHeight(stats.descentMeters);
-      dom.minSummary.textContent = formatHeight(stats.minElevation);
-      dom.maxSummary.textContent = formatHeight(stats.maxElevation);
+      dom.liveSamples.textContent = String(state.profileData.samples?.length ?? 0);
+      updateLiveLengthWarning(dom, state, stats);
 
       rendered.profileMode = 'data';
       rendered.profileSegmentId = segmentId;
@@ -630,6 +630,37 @@ function renderSlopeBar(container, props, direction) {
 // ─────────────────────────────────────────────────────────────────────────
 // Pure helpers
 // ─────────────────────────────────────────────────────────────────────────
+
+// Compare the DEM-path length we computed live against the canonical PMTiles
+// length_m. A noticeable mismatch (>5 %) almost always means the way is
+// split across tile boundaries and the runtime stitcher couldn't put it
+// back together cleanly — the live profile then covers only a subset of
+// the real way. Surface that honestly in the UI so the user knows the
+// number isn't trustworthy for that segment, rather than silently showing
+// a wrong value.
+function updateLiveLengthWarning(dom, state, stats) {
+  if (!dom.liveLengthWarning) return;
+  const props = state.activeFeature?.properties;
+  const canonical = Number(props?.length_m);
+  const liveLen = Number(stats?.distanceMeters);
+  if (!Number.isFinite(canonical) || canonical <= 0 || !Number.isFinite(liveLen) || liveLen <= 0) {
+    dom.liveLengthWarning.hidden = true;
+    return;
+  }
+  const deviation = Math.abs(liveLen - canonical) / canonical;
+  if (deviation < 0.05) {
+    dom.liveLengthWarning.hidden = true;
+    return;
+  }
+  const coverage = Math.round((liveLen / canonical) * 100);
+  const liveStr = `${Math.round(liveLen)} m`;
+  const canonicalStr = `${Math.round(canonical)} m`;
+  dom.liveLengthWarning.textContent =
+    `ℹ️ Live-Pfad ${liveStr} weicht von der PMTiles-Länge ${canonicalStr} ab (~${coverage} %). `
+    + 'Der Way liegt vermutlich auf einer Tile-Grenze — wir können die Geometrie zur Laufzeit '
+    + 'nicht vollständig rekonstruieren. Geplant: künftig korrekte Anzeige.';
+  dom.liveLengthWarning.hidden = false;
+}
 
 function clamp01(value) {
   if (!Number.isFinite(value)) return 0;

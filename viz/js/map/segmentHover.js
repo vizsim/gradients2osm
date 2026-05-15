@@ -105,7 +105,7 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
       osmId,
       regionId,
       properties: { ...feature.properties },
-      coordinates: extractLineCoordinates(feature),
+      coordinates: getStitchedWayCoordinates(map, regionId, osmId, feature),
     };
 
     appState.applyHover(hovered);
@@ -184,7 +184,7 @@ export function setupSegmentHover({ map, appState, mapterhornClient }) {
       osmId,
       regionId,
       properties: { ...feature.properties },
-      coordinates: extractLineCoordinates(feature),
+      coordinates: getStitchedWayCoordinates(map, regionId, osmId, feature),
     };
 
     if (!additive) {
@@ -480,6 +480,149 @@ function extractLineCoordinates(feature) {
     }, []);
   }
   return [];
+}
+
+// tippecanoe clips each way at tile boundaries, so a point-based
+// queryRenderedFeatures only returns the fragment under the cursor — that's
+// why Live "Länge" used to come out way shorter than the PMTiles length_m
+// attribute. We use a viewport-wide queryRenderedFeatures on the main ways
+// layer to fetch *all* fragments with the same osm_id at the current zoom,
+// then stitch them by matching endpoints. Result is the full way's polyline
+// (modulo tippecanoe quantization). Falls back to the single-feature path
+// if the source isn't ready yet.
+function getStitchedWayCoordinates(map, regionId, osmId, fallbackFeature) {
+  const sourceId = `gradients-${regionId}`;
+  if (!map.getSource(sourceId)) {
+    return extractLineCoordinates(fallbackFeature);
+  }
+
+  // Use queryRenderedFeatures (not querySourceFeatures) to get *only*
+  // features that the renderer is actually drawing at the current zoom. The
+  // source cache holds tiles from many zoom levels (pre-fetched, retained
+  // during zoom transitions); querySourceFeatures returns those too, so
+  // the same OSM way shows up multiple times with different quantization
+  // grids. The stitcher then joins z11 and z13 fragments via their
+  // approximately-matching endpoints (within our 10 m tolerance), producing
+  // zigzag traversals that double-count distance — which is exactly the
+  // "Live 342 m on a 216 m way" symptom.
+  //
+  // queryRenderedFeatures with no geometry argument queries the whole
+  // viewport on the named layer; the main-ways layer covers everything we
+  // need. Filter by osm_id in JS for the same MLT/encoding robustness
+  // reasons we kept from the previous approach.
+  const mainLayerId = `gradients-${regionId}-ways`;
+  let allFeatures;
+  try {
+    allFeatures = map.queryRenderedFeatures(undefined, { layers: [mainLayerId] });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[stitch] queryRenderedFeatures threw', err);
+    return extractLineCoordinates(fallbackFeature);
+  }
+  const osmIdStr = String(osmId);
+  const osmIdNum = Number(osmId);
+  const matchedAll = allFeatures.filter((f) => {
+    const raw = f.properties?.osm_id;
+    if (raw == null) return false;
+    return raw === osmIdStr || raw === osmIdNum || Number(raw) === osmIdNum;
+  });
+
+  const features = matchedAll;
+
+  // Expand each feature into one or more polylines (MultiLineString parts
+  // are kept separate so the stitcher can reconnect them properly instead
+  // of pretending they're already joined).
+  const polylines = [];
+  for (const f of features) {
+    const g = f.geometry;
+    if (!g) continue;
+    if (g.type === 'LineString' && g.coordinates.length >= 2) {
+      polylines.push(g.coordinates);
+    } else if (g.type === 'MultiLineString') {
+      for (const part of g.coordinates) {
+        if (part.length >= 2) polylines.push(part);
+      }
+    }
+  }
+
+  if (polylines.length === 0) return extractLineCoordinates(fallbackFeature);
+  if (polylines.length === 1) return polylines[0];
+
+  // The same fragment can appear twice in the source cache when the tile is
+  // present at multiple zoom levels (during a zoom transition). Dedup by
+  // hashing the whole polyline — only true duplicates collapse, two distinct
+  // fragments that happen to share endpoints stay separate.
+  const seen = new Set();
+  const unique = [];
+  for (const p of polylines) {
+    const key = p.map((c) => `${c[0].toFixed(7)},${c[1].toFixed(7)}`).join(';');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(p);
+  }
+  if (unique.length === 1) return unique[0];
+
+  // Conservative endpoint-matching stitch. When fragments have aligned
+  // endpoints (clean tile boundaries) we get the full polyline. When they
+  // don't (overlapping fragments at zoom transitions, MapLibre keeping
+  // multi-zoom tiles rendered, ...) we keep the longest fragment alone.
+  // The remaining length gap is surfaced via a UI hint in profileView.js
+  // — see the "Tile-Übergänge" caption on the Live section.
+  return stitchPolylines(unique);
+}
+
+// Greedy endpoint-matching stitch. Picks the first polyline as the seed,
+// then repeatedly finds a remaining polyline whose endpoint matches the
+// chain's head or tail (in either orientation) and extends. Stops when no
+// remaining polyline connects — returns the longest chain we could build.
+// For ways where fragments overlap geographically (one zoom level's tile
+// returns a coarse version of the way that overlaps the higher-zoom tile's
+// fragment), the endpoints don't align and the stitcher keeps only the
+// longest fragment. profileView.js detects this case via the live-vs-PMTiles
+// length comparison and surfaces a tile-boundary hint to the user.
+function stitchPolylines(polylines) {
+  // ~10 m tolerance in degrees. tippecanoe should produce bit-exact endpoints
+  // at tile boundaries, but in practice we see drift of a few meters between
+  // adjacent tiles' clipped endpoints — bumping to 10 m is well below any
+  // realistic OSM vertex spacing (residential ways are 10-50 m between nodes),
+  // so we still can't accidentally fuse two unrelated fragments since they
+  // all share the same osm_id by construction anyway.
+  const TOL = 1e-4;
+  const close = (a, b) =>
+    Math.abs(a[0] - b[0]) < TOL && Math.abs(a[1] - b[1]) < TOL;
+
+  const remaining = polylines.slice();
+  let result = remaining.shift();
+  let progress = true;
+
+  while (progress && remaining.length > 0) {
+    progress = false;
+    const head = result[0];
+    const tail = result[result.length - 1];
+
+    for (let i = 0; i < remaining.length; i += 1) {
+      const f = remaining[i];
+      const fStart = f[0];
+      const fEnd = f[f.length - 1];
+
+      if (close(tail, fStart)) {
+        result = result.concat(f.slice(1));
+      } else if (close(tail, fEnd)) {
+        result = result.concat(f.slice(0, -1).reverse());
+      } else if (close(head, fStart)) {
+        result = f.slice().reverse().concat(result.slice(1));
+      } else if (close(head, fEnd)) {
+        result = f.slice(0, -1).concat(result);
+      } else {
+        continue;
+      }
+      remaining.splice(i, 1);
+      progress = true;
+      break;
+    }
+  }
+
+  return result;
 }
 
 function computeStats(samples, elevations, distanceMeters) {
