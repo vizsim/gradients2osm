@@ -17,6 +17,7 @@ data/processed/
 *.gpkg
 *.csv
 viz/data/*.pmtiles
+viz/preprocessing/vendor/
 
 
 # --- Python ---
