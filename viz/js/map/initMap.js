@@ -14,9 +14,9 @@ const POSITRON_STYLE_URL = 'https://tiles.openfreemap.org/styles/positron';
 // per-source/per-layer suffix; `file` is the basename used for both the
 // local path and the remote fallback URL.
 const GRADIENT_REGIONS = [
-  { id: 'saarland',           label: 'Saarland',             file: 'saarland_v01.pmtiles' },
-  { id: 'brandenburg',        label: 'Brandenburg + Berlin', file: 'brandenburg_v01.pmtiles' },
-  { id: 'baden_wuerttemberg', label: 'Baden-Württemberg',    file: 'baden-wuerttemberg_v01.pmtiles' },
+  { id: 'saarland',           label: 'Saarland',             file: 'saarland_v02.mlt.pmtiles' },
+  { id: 'brandenburg',        label: 'Brandenburg + Berlin', file: 'brandenburg_v02.mlt.pmtiles' },
+  { id: 'baden_wuerttemberg', label: 'Baden-Württemberg',    file: 'baden-wuerttemberg_v02.mlt.pmtiles' },
 ];
 
 // Where to look for PMTiles. We probe LOCAL first at startup — if the file
