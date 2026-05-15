@@ -17,6 +17,8 @@ const GRADIENT_REGIONS = [
   { id: 'saarland',           label: 'Saarland',             file: 'saarland_v02.mlt.pmtiles' },
   { id: 'brandenburg',        label: 'Brandenburg + Berlin', file: 'brandenburg_v02.mlt.pmtiles' },
   { id: 'baden_wuerttemberg', label: 'Baden-Württemberg',    file: 'baden-wuerttemberg_v02.mlt.pmtiles' },
+  { id: 'bayern',             label: 'Bayern',               file: 'bayern_v02.mlt.pmtiles' },
+  { id: 'sachsen',            label: 'Sachsen',              file: 'sachsen_v02.mlt.pmtiles' },
 ];
 
 // Where to look for PMTiles. We probe LOCAL first at startup — if the file
