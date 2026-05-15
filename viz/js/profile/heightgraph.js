@@ -618,7 +618,13 @@ function buildDistanceTicks(maxValue, step) {
     return ticks;
   }
 
-  if (ticks.length > 2 && remainingDistance < step * 0.35) {
+  // Drop the second-to-last regular tick when it lies within ~60 % of a step
+  // away from the rounded-max label — anything closer and the two labels
+  // crowd visually. Empirically 0.5 was too lenient (e.g. 1770 m / step 500
+  // has rem = 270 = 54 %, still cramped); 0.6 catches both the 480/200 case
+  // (40 %) and the 1770/500 case (54 %) without sacrificing usable density
+  // when the max sits cleanly inside the next step.
+  if (ticks.length > 2 && remainingDistance < step * 0.6) {
     ticks[ticks.length - 1] = roundedMax;
     return ticks;
   }
