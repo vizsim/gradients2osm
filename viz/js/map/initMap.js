@@ -329,6 +329,10 @@ function addGradientLayers(map, regionUrls) {
     map.addSource(sourceIdFor(region.id), {
       type: 'vector',
       url: regionUrls[region.id],
+      // Tiles in these PMTiles are MapLibre Tiles (MLT), not MVT. Without
+      // this hint MapLibre's vector source tries to protobuf-decode them
+      // and throws "Unimplemented type: N" for every tile.
+      encoding: 'mlt',
       attribution: regionIndex === 0
         ? 'Live-DEM <a href="https://mapterhorn.com" target="_blank" rel="noreferrer">Mapterhorn</a>'
             + ' · Steigungen auf Basis von'

@@ -168,11 +168,16 @@ Zoom-Highway-Filter erst ab z11 dichte Geometrien zulässt.
 
 ## Browser-Support
 
-- MapLibre GL JS: MLT-Support ist im Main gemerged (Tracking-Issue
-  [#6258](https://github.com/maplibre/maplibre-gl-js/issues/6258),
-  closed). Seit ~v5.x lädt MapLibre `mlt`-Tile-Typ direkt.
+- MapLibre GL JS: MLT-Support seit PR
+  [#6570](https://github.com/maplibre/maplibre-gl-js/pull/6570)
+  (merged 2025-11-08). Im Style-Spec als `source_vector.encoding`-Enum:
+  Default ist `"mvt"`, für MLT muss am `addSource`-Call explizit
+  `encoding: 'mlt'` gesetzt werden — sonst versucht MapLibre die Bytes
+  als Protobuf zu dekodieren und wirft pro Tile
+  `Unable to parse the tile … Unimplemented type: N`.
 - pmtiles-Container mit `tile_type=mlt` wird von go-pmtiles korrekt
-  ausgewiesen — `pmtiles show` zeigt `tile type: mlt`.
+  ausgewiesen — `pmtiles show` zeigt `tile type: mlt`. pmtiles.js
+  selbst bleibt format-agnostisch und liefert nur die Bytes.
 
 ## Offene Punkte / nächste Schritte
 
