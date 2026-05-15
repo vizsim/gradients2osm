@@ -548,81 +548,265 @@ function getStitchedWayCoordinates(map, regionId, osmId, fallbackFeature) {
   if (polylines.length === 0) return extractLineCoordinates(fallbackFeature);
   if (polylines.length === 1) return polylines[0];
 
-  // The same fragment can appear twice in the source cache when the tile is
-  // present at multiple zoom levels (during a zoom transition). Dedup by
-  // hashing the whole polyline — only true duplicates collapse, two distinct
-  // fragments that happen to share endpoints stay separate.
+  // The same fragment can appear twice in opposite directions or at multiple
+  // zoom levels during a zoom transition. Canonicalize the full polyline so
+  // forward/reverse duplicates collapse before we try to merge anything.
   const seen = new Set();
   const unique = [];
   for (const p of polylines) {
-    const key = p.map((c) => `${c[0].toFixed(7)},${c[1].toFixed(7)}`).join(';');
+    const key = canonicalPolylineKey(p);
     if (seen.has(key)) continue;
     seen.add(key);
     unique.push(p);
   }
   if (unique.length === 1) return unique[0];
 
-  // Conservative endpoint-matching stitch. When fragments have aligned
-  // endpoints (clean tile boundaries) we get the full polyline. When they
-  // don't (overlapping fragments at zoom transitions, MapLibre keeping
-  // multi-zoom tiles rendered, ...) we keep the longest fragment alone.
-  // The remaining length gap is surfaced via a UI hint in profileView.js
-  // — see the "Tile-Übergänge" caption on the Live section.
+  // Merge the longest visible fragment with any remaining fragment that can
+  // extend the chain at either end. Overlaps from other zoom levels are
+  // recognized via proximity to the current path, not just by identical
+  // endpoints. If we still can't attach everything, we keep the best chain
+  // we reconstructed rather than whichever fragment MapLibre returned first.
   return stitchPolylines(unique);
 }
 
-// Greedy endpoint-matching stitch. Picks the first polyline as the seed,
-// then repeatedly finds a remaining polyline whose endpoint matches the
-// chain's head or tail (in either orientation) and extends. Stops when no
-// remaining polyline connects — returns the longest chain we could build.
-// For ways where fragments overlap geographically (one zoom level's tile
-// returns a coarse version of the way that overlaps the higher-zoom tile's
-// fragment), the endpoints don't align and the stitcher keeps only the
-// longest fragment. profileView.js detects this case via the live-vs-PMTiles
-// length comparison and surfaces a tile-boundary hint to the user.
+// Greedy chain merge for mostly-linear ways. Seed with the longest visible
+// fragment, then attach any remaining fragment whose covered part lies on the
+// current path and whose uncovered part extends the head or tail. This is
+// robust against clean tile cuts, reversed duplicates, and overlapping coarse
+// multi-zoom fragments.
 function stitchPolylines(polylines) {
-  // ~10 m tolerance in degrees. tippecanoe should produce bit-exact endpoints
-  // at tile boundaries, but in practice we see drift of a few meters between
-  // adjacent tiles' clipped endpoints — bumping to 10 m is well below any
-  // realistic OSM vertex spacing (residential ways are 10-50 m between nodes),
-  // so we still can't accidentally fuse two unrelated fragments since they
-  // all share the same osm_id by construction anyway.
   const TOL = 1e-4;
-  const close = (a, b) =>
-    Math.abs(a[0] - b[0]) < TOL && Math.abs(a[1] - b[1]) < TOL;
+  const remaining = polylines
+    .slice()
+    .sort((a, b) => polylinePlanarLength(b) - polylinePlanarLength(a));
+  let result = remaining.shift().slice();
 
-  const remaining = polylines.slice();
-  let result = remaining.shift();
-  let progress = true;
-
-  while (progress && remaining.length > 0) {
-    progress = false;
-    const head = result[0];
-    const tail = result[result.length - 1];
+  while (remaining.length > 0) {
+    let bestIndex = -1;
+    let bestCandidate = null;
 
     for (let i = 0; i < remaining.length; i += 1) {
-      const f = remaining[i];
-      const fStart = f[0];
-      const fEnd = f[f.length - 1];
-
-      if (close(tail, fStart)) {
-        result = result.concat(f.slice(1));
-      } else if (close(tail, fEnd)) {
-        result = result.concat(f.slice(0, -1).reverse());
-      } else if (close(head, fStart)) {
-        result = f.slice().reverse().concat(result.slice(1));
-      } else if (close(head, fEnd)) {
-        result = f.slice(0, -1).concat(result);
-      } else {
-        continue;
+      const candidate = describeMergeCandidate(result, remaining[i], TOL);
+      if (!candidate) continue;
+      if (
+        !bestCandidate
+        || candidate.addedLength > bestCandidate.addedLength
+        || (
+          candidate.addedLength === bestCandidate.addedLength
+          && candidate.anchorDistanceSq < bestCandidate.anchorDistanceSq
+        )
+      ) {
+        bestCandidate = candidate;
+        bestIndex = i;
       }
-      remaining.splice(i, 1);
-      progress = true;
-      break;
+    }
+
+    if (bestIndex < 0) break;
+
+    result = applyMergeCandidate(result, bestCandidate, TOL);
+    remaining.splice(bestIndex, 1);
+  }
+
+  return dedupeConsecutivePoints(result, TOL);
+}
+
+function describeMergeCandidate(result, fragment, tol) {
+  const forward = describeOrientedMerge(result, fragment, tol);
+  const reversed = describeOrientedMerge(result, fragment.slice().reverse(), tol);
+  if (!forward) return reversed;
+  if (!reversed) return forward;
+  if (forward.addedLength !== reversed.addedLength) {
+    return forward.addedLength > reversed.addedLength ? forward : reversed;
+  }
+  return forward.anchorDistanceSq <= reversed.anchorDistanceSq ? forward : reversed;
+}
+
+function describeOrientedMerge(result, oriented, tol) {
+  const covered = oriented.map((point) => pointNearPolyline(point, result, tol));
+  const firstCovered = covered.indexOf(true);
+  if (firstCovered === -1) {
+    if (!polylinesOverlap(oriented, result, tol)) return null;
+    const addedLength = polylinePlanarLength(oriented) - polylinePlanarLength(result);
+    if (addedLength <= 0) return null;
+    return {
+      replace: oriented.slice(),
+      addedLength,
+      anchorDistanceSq: distanceSq(oriented[0], result[0]) + distanceSq(oriented[oriented.length - 1], result[result.length - 1]),
+    };
+  }
+
+  const lastCovered = covered.lastIndexOf(true);
+  const prefix = oriented.slice(0, firstCovered);
+  const suffix = oriented.slice(lastCovered + 1);
+  const head = result[0];
+  const tail = result[result.length - 1];
+  const actions = [];
+  let addedLength = 0;
+  let anchorDistanceSq = 0;
+
+  if (prefix.length > 0 && pointsClose(oriented[firstCovered], head, tol)) {
+    actions.push({ side: 'head', points: prefix });
+    addedLength += polylinePlanarLength(prefix);
+    anchorDistanceSq += distanceSq(oriented[firstCovered], head);
+  }
+
+  if (suffix.length > 0 && pointsClose(oriented[lastCovered], tail, tol)) {
+    actions.push({ side: 'tail', points: suffix });
+    addedLength += polylinePlanarLength(suffix);
+    anchorDistanceSq += distanceSq(oriented[lastCovered], tail);
+  }
+
+  if (actions.length === 0 || addedLength <= 0) return null;
+  return { actions, addedLength, anchorDistanceSq };
+}
+
+function applyMergeCandidate(result, candidate, tol) {
+  if (candidate.replace) {
+    return dedupeConsecutivePoints(candidate.replace, tol);
+  }
+
+  let next = result;
+  for (const action of candidate.actions) {
+    if (action.side === 'head') next = prependPoints(next, action.points, tol);
+    else next = appendPoints(next, action.points, tol);
+  }
+  return next;
+}
+
+function prependPoints(result, prefix, tol) {
+  const nextPrefix = prefix.slice();
+  while (nextPrefix.length > 0 && pointsClose(nextPrefix[nextPrefix.length - 1], result[0], tol)) {
+    nextPrefix.pop();
+  }
+  if (nextPrefix.length === 0) return result;
+  return dedupeConsecutivePoints(nextPrefix.concat(result), tol);
+}
+
+function appendPoints(result, suffix, tol) {
+  const nextSuffix = suffix.slice();
+  while (nextSuffix.length > 0 && pointsClose(nextSuffix[0], result[result.length - 1], tol)) {
+    nextSuffix.shift();
+  }
+  if (nextSuffix.length === 0) return result;
+  return dedupeConsecutivePoints(result.concat(nextSuffix), tol);
+}
+
+function dedupeConsecutivePoints(points, tol) {
+  if (points.length < 2) return points.slice();
+  const deduped = [points[0]];
+  for (let i = 1; i < points.length; i += 1) {
+    if (!pointsClose(points[i], deduped[deduped.length - 1], tol)) {
+      deduped.push(points[i]);
+    }
+  }
+  return deduped;
+}
+
+function pointNearPolyline(point, polyline, tol) {
+  const tolSq = tol * tol;
+  for (let i = 0; i < polyline.length; i += 1) {
+    if (distanceSq(point, polyline[i]) <= tolSq) return true;
+    if (i === 0) continue;
+    if (pointSegmentDistanceSq(point, polyline[i - 1], polyline[i]) <= tolSq) return true;
+  }
+  return false;
+}
+
+function polylinesOverlap(a, b, tol) {
+  for (const point of a) {
+    if (pointNearPolyline(point, b, tol)) return true;
+  }
+  for (const point of b) {
+    if (pointNearPolyline(point, a, tol)) return true;
+  }
+
+  const tolSq = tol * tol;
+  for (let i = 1; i < a.length; i += 1) {
+    for (let j = 1; j < b.length; j += 1) {
+      if (segmentDistanceSq(a[i - 1], a[i], b[j - 1], b[j]) <= tolSq) {
+        return true;
+      }
     }
   }
 
-  return result;
+  return false;
+}
+
+function segmentDistanceSq(a0, a1, b0, b1) {
+  if (segmentsIntersect(a0, a1, b0, b1)) return 0;
+  return Math.min(
+    pointSegmentDistanceSq(a0, b0, b1),
+    pointSegmentDistanceSq(a1, b0, b1),
+    pointSegmentDistanceSq(b0, a0, a1),
+    pointSegmentDistanceSq(b1, a0, a1),
+  );
+}
+
+function segmentsIntersect(a0, a1, b0, b1) {
+  const o1 = orientation(a0, a1, b0);
+  const o2 = orientation(a0, a1, b1);
+  const o3 = orientation(b0, b1, a0);
+  const o4 = orientation(b0, b1, a1);
+
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && onSegment(a0, b0, a1)) return true;
+  if (o2 === 0 && onSegment(a0, b1, a1)) return true;
+  if (o3 === 0 && onSegment(b0, a0, b1)) return true;
+  if (o4 === 0 && onSegment(b0, a1, b1)) return true;
+  return false;
+}
+
+function orientation(a, b, c) {
+  const cross = ((b[1] - a[1]) * (c[0] - b[0])) - ((b[0] - a[0]) * (c[1] - b[1]));
+  if (Math.abs(cross) < 1e-12) return 0;
+  return cross > 0 ? 1 : 2;
+}
+
+function onSegment(a, b, c) {
+  return b[0] <= Math.max(a[0], c[0])
+    && b[0] >= Math.min(a[0], c[0])
+    && b[1] <= Math.max(a[1], c[1])
+    && b[1] >= Math.min(a[1], c[1]);
+}
+
+function pointSegmentDistanceSq(point, start, end) {
+  const dx = end[0] - start[0];
+  const dy = end[1] - start[1];
+  if (dx === 0 && dy === 0) return distanceSq(point, start);
+
+  const t = Math.max(0, Math.min(1,
+    (((point[0] - start[0]) * dx) + ((point[1] - start[1]) * dy)) / ((dx * dx) + (dy * dy))));
+  const proj = [start[0] + (t * dx), start[1] + (t * dy)];
+  return distanceSq(point, proj);
+}
+
+function pointsClose(a, b, tol) {
+  return distanceSq(a, b) <= tol * tol;
+}
+
+function distanceSq(a, b) {
+  const dx = a[0] - b[0];
+  const dy = a[1] - b[1];
+  return (dx * dx) + (dy * dy);
+}
+
+function polylinePlanarLength(polyline) {
+  let length = 0;
+  for (let i = 1; i < polyline.length; i += 1) {
+    const dx = polyline[i][0] - polyline[i - 1][0];
+    const dy = polyline[i][1] - polyline[i - 1][1];
+    length += Math.hypot(dx, dy);
+  }
+  return length;
+}
+
+function canonicalPolylineKey(polyline) {
+  const forward = polyline.map((c) => `${c[0].toFixed(7)},${c[1].toFixed(7)}`).join(';');
+  const reversed = polyline
+    .slice()
+    .reverse()
+    .map((c) => `${c[0].toFixed(7)},${c[1].toFixed(7)}`).join(';');
+  return forward <= reversed ? forward : reversed;
 }
 
 function computeStats(samples, elevations, distanceMeters) {
