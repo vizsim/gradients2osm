@@ -10,7 +10,7 @@ const POSITRON_STYLE_URL = 'https://tiles.openfreemap.org/styles/positron';
 // so adding more states here has near-zero cost when they're off-screen.
 //
 // Add a new state by dropping its .pmtiles into ./data/ AND uploading the
-// same filename to B2, then appending an entry here. `id` is used as a
+// same filename to the remote bucket, then appending an entry here. `id` is used as a
 // per-source/per-layer suffix; `file` is the basename used for both the
 // local path and the remote fallback URL.
 const GRADIENT_REGIONS = [
@@ -24,9 +24,10 @@ const GRADIENT_REGIONS = [
 // Where to look for PMTiles. We probe LOCAL first at startup — if the file
 // is bundled with the deploy, range reads stay on the same origin (instant,
 // no CORS). If LOCAL 404s (the case when the deploy is on GitHub Pages and
-// the .pmtiles is too big to commit), we fall through to REMOTE on B2.
+// the .pmtiles is too big to commit), we fall through to the REMOTE bucket
+// (tiles.vizsim.de, a custom domain in front of the B2 storage).
 const LOCAL_PMTILES_BASE = './data/';
-const REMOTE_PMTILES_BASE = 'https://f003.backblazeb2.com/file/gradients2osm/';
+const REMOTE_PMTILES_BASE = 'https://tiles.vizsim.de/file/gradients2osm/';
 
 // Highway tiers — used both for build-time filtering (in tippecanoe) and
 // runtime zoom-aware filtering on the main layer below.
